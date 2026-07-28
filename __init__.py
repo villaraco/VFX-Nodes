@@ -402,6 +402,13 @@ class VFXRestoreResolution:
             temp_W = max(orig_width, round(crop_W * scale))
             temp_H = max(orig_height, round(crop_H * scale))
 
+            # Ensure symmetric centre-crop: if the excess is odd the integer
+            # division truncates 0.5 and the crop shifts by 0.5 px.
+            if (temp_W - orig_width) % 2 != 0:
+                temp_W += 1
+            if (temp_H - orig_height) % 2 != 0:
+                temp_H += 1
+
             img_4d = cropped.permute(0, 3, 1, 2)
             upscaled = _resample(img_4d, temp_H, temp_W, upscale_method)
 
