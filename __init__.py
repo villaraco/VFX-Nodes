@@ -48,11 +48,12 @@ def _fit_area(W: int, H: int, max_area: int | None, multiple: int) -> tuple[int,
     aspect = W / H
     scale = (max_area / (W * H)) ** 0.5
     target_H = max(multiple, round(H * scale / multiple) * multiple)
-    target_W = max(multiple, round(target_H * aspect / multiple) * multiple)
+    target_W = max(multiple, round(target_H * aspect))
 
     # Clamp if we overshot the area budget by more than 5 %
-    if target_W * target_H > int(max_area * 1.05):
-        target_W = max(multiple, round((target_W * 0.95) / multiple) * multiple)
+    while target_W * target_H > int(max_area * 1.05) and target_H > multiple:
+        target_H -= multiple
+        target_W = max(multiple, round(target_H * aspect))
 
     scale_factor = target_W / W
     return target_W, target_H, scale_factor
