@@ -121,7 +121,7 @@ def test_padding_roundtrip(resolutions: list[tuple[int, int]]) -> int:
                 image, preset_name, "bicubic", pad_mode, 1.0, mask,
             )
             img_r, msk_r, _, _, _, _, _ = restore.restore(
-                img_p, ow, oh, sf, mw, mh, "bicubic", msk_p,
+                img_p, ow, oh, sf, mw, mh, "bicubic", mask=msk_p,
             )
 
             img_ok = _compare_tensors(image, img_r, "image")["ok"]
@@ -182,7 +182,7 @@ def test_preset_roundtrip(resolutions: list[tuple[int, int]]) -> int:
                     continue
 
                 img_r, msk_r, _, _, _, _, _ = restore.restore(
-                    img_p, ow, oh, sf, mw, mh, "bicubic", msk_p,
+                    img_p, ow, oh, sf, mw, mh, "bicubic", mask=msk_p,
                 )
 
                 if sf >= 1.0:

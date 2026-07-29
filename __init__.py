@@ -316,18 +316,19 @@ class VFXRestoreResolution:
         "Primero recorta la zona de padding añadida por Prepare (crop anclado top-left, "
         "cero interpolacion). Si la imagen fue reducida antes del modelo, aplica un "
         "upscale uniforme de alta calidad para devolverla a su resolucion original exacta. "
+        "Usa external_upscale si colocaste un upscaler externo entre el modelo y este nodo "
+        "(ej. x2 = 2.0). Las dimensiones de crop y target se ajustan proporcionalmente. "
+        "Alternativa sin external_upscale: Restore(passthrough) -> image_cropped -> Upscaler -> VFXFitDimension. "
         "7 salidas: imagen y mascara restauradas, imagen y mascara cropeadas "
         "(sin upscale), max_resolution (para SeedVR2), y target_width/target_height "
-        "(para RTX VSR y Fit Dimension). "
-        "Usa image_cropped + target_width/height para conectar directamente a RTX VSR "
-        "sin necesidad del nodo Fit Dimension."
+        "(para RTX VSR y Fit Dimension)."
     )
 
     @classmethod
     def INPUT_TYPES(s):
         return {
             "required": {
-                "image": ("IMAGE", {"tooltip": "Processed image from VAE Decode (may have different dimensions than expected)."}),
+                "image": ("IMAGE", {"tooltip": "Processed image from VAE Decode (or from external upscaler -- set external_upscale to match)."}),
                 "orig_width": ("INT", {"forceInput": True, "tooltip": "Original input width. Connect from Prepare's orig_width output."}),
                 "orig_height": ("INT", {"forceInput": True, "tooltip": "Original input height. Connect from Prepare's orig_height output."}),
                 "scale_factor": ("FLOAT", {"forceInput": True, "tooltip": "Scale factor applied by Prepare (1.0 = no downscale, <1.0 = downscaled)."}),
@@ -336,6 +337,11 @@ class VFXRestoreResolution:
                 "upscale_method": (
                     ["auto", "lanczos", "bicubic", "bilinear", "nearest", "passthrough"],
                     {"default": "lanczos", "tooltip": "Upscale method. passthrough = no upscale (use image_cropped output for external upscaler like SeedVR2)."},
+                ),
+                "external_upscale": (
+                    "FLOAT",
+                    {"default": 1.0, "min": 0.5, "max": 8.0, "step": 0.1,
+                     "tooltip": "Scale factor of an external upscaler placed between the model and this node. 1.0 = no external upscaler. 2.0 = 2x upscaler. Adjusts crop and target dimensions proportionally."},
                 ),
             },
             "optional": {
@@ -357,66 +363,66 @@ class VFXRestoreResolution:
         model_width: int,
         model_height: int,
         upscale_method: str,
+        external_upscale: float = 1.0,
         mask: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         B, H, W, C = image.shape
 
+        # ---- effective dimensions (account for external upscaler) ----
+        model_width_eff = round(model_width * external_upscale)
+        model_height_eff = round(model_height * external_upscale)
+        orig_width_eff = round(orig_width * external_upscale)
+        orig_height_eff = round(orig_height * external_upscale)
+
         # ---- crop / adjust to model dimensions ----
-        if H == model_height and W == model_width:
-            # Exact match -> pixel-perfect
+        if H == model_height_eff and W == model_width_eff:
             crop_H, crop_W = H, W
             off_H, off_W = 0, 0
 
-        elif H < model_height or W < model_width:
-            # Model shrank -> use available area
+        elif H < model_height_eff or W < model_width_eff:
             crop_H, crop_W = H, W
             off_H, off_W = 0, 0
             print(
                 f"[VFX] WARNING: processed image ({W}x{H}) is SMALLER "
-                f"than expected ({model_width}x{model_height}). "
+                f"than expected ({model_width_eff}x{model_height_eff}). "
                 f"Using available area."
             )
 
         else:
-            # Padding or model changed size -> top-left crop to expected
-            crop_H = min(H, model_height)
-            crop_W = min(W, model_width)
+            crop_H = min(H, model_height_eff)
+            crop_W = min(W, model_width_eff)
             off_H, off_W = 0, 0
-            if H > model_height + 128 or W > model_width + 128:
+            if H > model_height_eff + 128 or W > model_width_eff + 128:
                 print(
                     f"[VFX] WARNING: model significantly changed dimensions "
-                    f"({W}x{H} vs expected {model_width}x{model_height})."
+                    f"({W}x{H} vs expected {model_width_eff}x{model_height_eff})."
                 )
 
         cropped = image[:, off_H:off_H + crop_H, off_W:off_W + crop_W, :]
 
         # ---- uniform-scale upscale (zero aspect distortion) ----
         needs_upscale = (
-            (crop_H != orig_height or crop_W != orig_width)
+            (crop_H != orig_height_eff or crop_W != orig_width_eff)
             and upscale_method != "passthrough"
         )
         if needs_upscale:
-            # Calculate a UNIFORM scale factor so both dimensions scale equally
-            scale_w = orig_width / crop_W
-            scale_h = orig_height / crop_H
-            scale = max(scale_w, scale_h)  # ensure target is fully covered
-            temp_W = max(orig_width, round(crop_W * scale))
-            temp_H = max(orig_height, round(crop_H * scale))
+            scale_w = orig_width_eff / crop_W
+            scale_h = orig_height_eff / crop_H
+            scale = max(scale_w, scale_h)
+            temp_W = max(orig_width_eff, round(crop_W * scale))
+            temp_H = max(orig_height_eff, round(crop_H * scale))
 
-            # Ensure symmetric centre-crop: if the excess is odd the integer
-            # division truncates 0.5 and the crop shifts by 0.5 px.
-            if (temp_W - orig_width) % 2 != 0:
+            if (temp_W - orig_width_eff) % 2 != 0:
                 temp_W += 1
-            if (temp_H - orig_height) % 2 != 0:
+            if (temp_H - orig_height_eff) % 2 != 0:
                 temp_H += 1
 
             img_4d = cropped.permute(0, 3, 1, 2)
             upscaled = _resample(img_4d, temp_H, temp_W, upscale_method)
 
-            # Center-crop to exact target dimensions
-            trim_w = (temp_W - orig_width) // 2
-            trim_h = (temp_H - orig_height) // 2
-            restored_image = upscaled[:, :, trim_h:trim_h + orig_height, trim_w:trim_w + orig_width].permute(0, 2, 3, 1)
+            trim_w = (temp_W - orig_width_eff) // 2
+            trim_h = (temp_H - orig_height_eff) // 2
+            restored_image = upscaled[:, :, trim_h:trim_h + orig_height_eff, trim_w:trim_w + orig_width_eff].permute(0, 2, 3, 1)
         else:
             restored_image = cropped
 
@@ -427,7 +433,7 @@ class VFXRestoreResolution:
             if needs_upscale:
                 mask_4d = raw_mask_cropped.unsqueeze(1)
                 mask_up = _resample(mask_4d, temp_H, temp_W, "nearest")
-                restored_mask = mask_up[:, :, trim_h:trim_h + orig_height, trim_w:trim_w + orig_width].squeeze(1)
+                restored_mask = mask_up[:, :, trim_h:trim_h + orig_height_eff, trim_w:trim_w + orig_width_eff].squeeze(1)
             else:
                 restored_mask = raw_mask_cropped
         else:
@@ -435,10 +441,10 @@ class VFXRestoreResolution:
                 (B, crop_H, crop_W), dtype=torch.float32, device=image.device,
             )
             restored_mask = torch.zeros(
-                (B, orig_height, orig_width), dtype=torch.float32, device=image.device,
+                (B, orig_height_eff, orig_width_eff), dtype=torch.float32, device=image.device,
             )
 
-        return (restored_image, restored_mask, cropped, raw_mask_cropped, max(orig_width, orig_height), orig_width, orig_height)
+        return (restored_image, restored_mask, cropped, raw_mask_cropped, max(orig_width_eff, orig_height_eff), orig_width_eff, orig_height_eff)
 
 
 # ============================================================================
