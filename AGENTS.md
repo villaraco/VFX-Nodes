@@ -4,7 +4,8 @@
 
 **Name:** Mike
 **ComfyUI install:** `E:\Comfyui\ComfyUI-Easy-Install\ComfyUI\custom_nodes\VFX_Nodes\`
-**Obsidian Vault:** `E:\Obsidian\Vault-DIARIO-OpenCode\`
+**Obsidian Vault (Diario):** `E:\Obsidian\Vault-DIARIO-OpenCode\`
+**Obsidian Vault (ComfyUI):** `E:\Obsidian\Vault-Comfyui\`
 
 ## Project
 
@@ -71,16 +72,16 @@ Copy the VFX-Nodes folder to `ComfyUI/custom_nodes/VFX_Nodes/`. The `__init__.py
 
 ## Obsidian Vault Documentation
 
-When asked to document the project, write notes in the Obsidian vault at
-`E:\Obsidian\Vault-DIARIO-OpenCode\`. The project-specific docs live in
-`Proyectos/VFX-Nodes/`. Daily session summaries go in `Diario/YYYY-MM-DD.md`.
+The project uses TWO Obsidian vaults. Both must be updated when documenting work.
 
-### Vault structure (relevant paths)
+### Vault 1: DIARIO-OpenCode (`E:\Obsidian\Vault-DIARIO-OpenCode\`)
+
+Project-specific docs and daily session logs.
 
 ```
 Vault-DIARIO-OpenCode/
 ├── Diario/                  Daily notes (YYYY-MM-DD.md)
-│   └── 2026-07-30.md        Example: VFXFramePad implementation session
+│   └── 2026-07-31.md        Example: pixel shift debugging session
 ├── Proyectos/
 │   └── VFX-Nodes/           Project documentation
 │       ├── VFX-Nodes.md         Main project hub (version, changelog, links)
@@ -90,9 +91,49 @@ Vault-DIARIO-OpenCode/
 └── Templates/               Note templates
 ```
 
-### Documentation workflow
+### Vault 2: ComfyUI (`E:\Obsidian\Vault-Comfyui\`)
+
+User-facing documentation and workflow guides for ComfyUI usage.
+
+```
+Vault-Comfyui/
+└── DOCUMENTS/
+    ├── Pipeline VFX - Control de Resolucion en ComfyUI.md  Main pipeline guide
+    ├── VFX Frame Pad - Guía de Uso.md                      FramePad usage guide
+    └── Instalacion VFX_NODES.md                            Installation guide
+```
+
+### Post-session documentation checklist
+
+After every working session, run through this checklist:
+
+1. **Commit & Push** — `git add`, `git commit`, `git push` all code changes to GitHub
+2. **Vault DIARIO** — Create/update daily note in `Diario/YYYY-MM-DD.md` with:
+   - Objectives completed
+   - Technical findings (bugs, solutions, lessons)
+   - Files changed
+   - References to related notes
+3. **Vault DIARIO — Project hub** — Update `Proyectos/VFX-Nodes/VFX-Nodes.md`:
+   - Bump version if applicable
+   - Add changelog entry
+   - Add session entry
+   - Add link to daily note
+4. **Vault DIARIO — Bug corrections** — If debugging was done, update `VFX Nodes - Correcciones de Bugs.md`
+5. **Vault ComfyUI** — Update relevant guides if:
+   - New feature added (pipeline workflow, new parameter)
+   - New best practice discovered
+   - Workflow tip or warning to document
+6. **Deploy** — Copy updated files to ComfyUI install:
+   ```powershell
+   Copy-Item "E:\OpenCode\Proyecto-LAB\VFX-Nodes\__init__.py" -Destination "E:\Comfyui\ComfyUI-Easy-Install\ComfyUI\custom_nodes\VFX_Nodes\__init__.py"
+   Copy-Item "E:\OpenCode\Proyecto-LAB\VFX-Nodes\js\*" -Destination "E:\Comfyui\ComfyUI-Easy-Install\ComfyUI\custom_nodes\VFX_Nodes\js\" -Recurse
+   ```
+
+### Documentation workflow (detailed)
 
 1. Update `Proyectos/VFX-Nodes/VFX-Nodes.md` — bump version, update changelog
 2. Create/update node-specific doc in `Proyectos/VFX-Nodes/` (e.g., `VFXFramePad.md`)
 3. Create daily note in `Diario/YYYY-MM-DD.md` with session summary
 4. If new node or node count changed, update `Instalación VFX_NODES.md`
+5. Update `Vault-Comfyui/DOCUMENTS/` guides for user-facing changes
+6. Run `validate_roundtrip.py` and confirm 0 failures before deploying
