@@ -30,6 +30,7 @@ sys.path.insert(0, str(_HERE))
 
 from __init__ import (
     MODEL_PRESETS,
+    VFXFramePad,
     VFXPrepareResolution,
     VFXRestoreResolution,
     VFXFitDimension,
@@ -76,6 +77,13 @@ def _random_mask(B: int, H: int, W: int) -> torch.Tensor:
     return (torch.rand(B, H, W) > 0.5).float()
 
 
+def _r(result):
+    """Extrae la tupla de resultado, manejando el nuevo formato con UI."""
+    if isinstance(result, dict) and "result" in result:
+        return result["result"]
+    return result
+
+
 def _compare_tensors(a: torch.Tensor, b: torch.Tensor, name: str) -> dict:
     """Compara dos tensores pixel a pixel."""
     if a.shape != b.shape:
@@ -117,12 +125,12 @@ def test_padding_roundtrip(resolutions: list[tuple[int, int]]) -> int:
             image = _random_image(B, H, W)
             mask = _random_mask(B, H, W)
 
-            img_p, msk_p, ow, oh, sf, mw, mh = prepare.prepare(
+            img_p, msk_p, ow, oh, sf, mw, mh = _r(prepare.prepare(
                 image, preset_name, "bicubic", pad_mode, 1.0, mask,
-            )
-            img_r, msk_r, _, _, _, _, _ = restore.restore(
+            ))
+            img_r, msk_r, _, _, _, _, _ = _r(restore.restore(
                 img_p, ow, oh, sf, mw, mh, "bicubic", mask=msk_p,
-            )
+            ))
 
             img_ok = _compare_tensors(image, img_r, "image")["ok"]
             msk_ok = _compare_tensors(mask, msk_r, "mask")["ok"]
@@ -168,9 +176,9 @@ def test_preset_roundtrip(resolutions: list[tuple[int, int]]) -> int:
             mask = _random_mask(B, H, W)
 
             try:
-                img_p, msk_p, ow, oh, sf, mw, mh = prepare.prepare(
+                img_p, msk_p, ow, oh, sf, mw, mh = _r(prepare.prepare(
                     image, preset_name, "bicubic", "replicate", 1.0, mask,
-                )
+                ))
 
                 # Verify padded image is multiple-aligned
                 mult = preset["multiple"]
@@ -181,9 +189,9 @@ def test_preset_roundtrip(resolutions: list[tuple[int, int]]) -> int:
                     preset_fails += 1
                     continue
 
-                img_r, msk_r, _, _, _, _, _ = restore.restore(
+                img_r, msk_r, _, _, _, _, _ = _r(restore.restore(
                     img_p, ow, oh, sf, mw, mh, "bicubic", mask=msk_p,
-                )
+                ))
 
                 if sf >= 1.0:
                     test_ok = (
@@ -247,9 +255,9 @@ def test_iclora_case() -> int:
         for W, H in problematic:
             image = _random_image(1, H, W)
             try:
-                img_p, _, _, _, _, mw, mh = prepare.prepare(
+                img_p, _, _, _, _, mw, mh = _r(prepare.prepare(
                     image, preset_name, "bicubic", "replicate", 1.0,
-                )
+                ))
                 # El modelo ve la imagen padded — el latente se calcula sobre esas dimensiones
                 pW, pH = img_p.shape[2], img_p.shape[1]
                 lw, lh = pW // 32, pH // 32
@@ -299,13 +307,13 @@ def test_adaptive_restore() -> int:
     # Caso: el modelo agranda la salida (Flux2Klein 992x576 -> 1328x768)
     W_in, H_in = 1280, 736
     image = _random_image(1, H_in, W_in)
-    _, _, ow, oh, sf, mw, mh = prepare.prepare(image, "Flux2Klein", "bicubic", "replicate", 1.0)
+    _, _, ow, oh, sf, mw, mh = _r(prepare.prepare(image, "Flux2Klein", "bicubic", "replicate", 1.0))
     print(f"  Prepare: {W_in}x{H_in} -> model={mw}x{mh} sf={sf:.4f}")
 
     # Simular que el modelo devuelve 1328x768 en vez de 992x576
     img_bad = torch.randn(1, 768, 1328, 3)
     try:
-        img_r, _, _, _, _, _, _ = restore.restore(img_bad, ow, oh, sf, mw, mh, "bicubic")
+        img_r, _, _, _, _, _, _ = _r(restore.restore(img_bad, ow, oh, sf, mw, mh, "bicubic"))
         shape_ok = img_r.shape == (1, H_in, W_in, 3)
         print(f"  Modelo agranda (1328x768): restored={img_r.shape[2]}x{img_r.shape[1]}",
               "OK" if shape_ok else "FAIL")
@@ -318,7 +326,7 @@ def test_adaptive_restore() -> int:
     # Caso: modelo encoge
     img_small = torch.randn(1, 256, 256, 3)
     try:
-        img_r, _, _, _, _, _, _ = restore.restore(img_small, ow, oh, sf, mw, mh, "bicubic")
+        img_r, _, _, _, _, _, _ = _r(restore.restore(img_small, ow, oh, sf, mw, mh, "bicubic"))
         shape_ok = img_r.shape == (1, H_in, W_in, 3)
         print(f"  Modelo encoge (256x256): restored={img_r.shape[2]}x{img_r.shape[1]}",
               "OK" if shape_ok else "FAIL")
@@ -331,7 +339,7 @@ def test_adaptive_restore() -> int:
     # Caso: modelo devuelve exacto (normal)
     img_normal = torch.randn(1, mh, mw, 3)
     try:
-        img_r, _, _, _, _, _, _ = restore.restore(img_normal, ow, oh, sf, mw, mh, "bicubic")
+        img_r, _, _, _, _, _, _ = _r(restore.restore(img_normal, ow, oh, sf, mw, mh, "bicubic"))
         shape_ok = img_r.shape == (1, H_in, W_in, 3)
         print(f"  Normal ({mw}x{mh}): restored={img_r.shape[2]}x{img_r.shape[1]}",
               "OK" if shape_ok else "FAIL")
@@ -344,7 +352,7 @@ def test_adaptive_restore() -> int:
     # Caso: modelo cambia aspect ratio (Flux2Klein 992x576 -> 1344x768)
     img_aspect = torch.randn(1, 600, 800, 3)
     try:
-        img_r, _, _, _, _, _, _ = restore.restore(img_aspect, ow, oh, sf, mw, mh, "bicubic")
+        img_r, _, _, _, _, _, _ = _r(restore.restore(img_aspect, ow, oh, sf, mw, mh, "bicubic"))
         shape_ok = img_r.shape == (1, H_in, W_in, 3)
         print(f"  Aspect change (800x600): restored={img_r.shape[2]}x{img_r.shape[1]}",
               "OK" if shape_ok else "FAIL")
@@ -358,7 +366,7 @@ def test_adaptive_restore() -> int:
     # El Restore debe usar el output completo del modelo (sin crop interno)
     img_flux_real = torch.randn(1, 768, 1344, 3)
     try:
-        img_r, _, _, _, _, _, _ = restore.restore(img_flux_real, ow, oh, sf, mw, mh, "bicubic")
+        img_r, _, _, _, _, _, _ = _r(restore.restore(img_flux_real, ow, oh, sf, mw, mh, "bicubic"))
         shape_ok = img_r.shape == (1, H_in, W_in, 3)
         # debe usar output completo: 1344x768 -> upscale -> 1280x736
         print(f"  Flux2Klein real (1344x768): restored={img_r.shape[2]}x{img_r.shape[1]}",
@@ -372,11 +380,11 @@ def test_adaptive_restore() -> int:
     # Caso: pad-only + modelo agranda
     W_in2, H_in2 = 1920, 1080
     image2 = _random_image(1, H_in2, W_in2)
-    _, _, ow2, oh2, sf2, mw2, mh2 = prepare.prepare(image2, "Pad Only (sin limite)", "bicubic", "replicate", 1.0)
+    _, _, ow2, oh2, sf2, mw2, mh2 = _r(prepare.prepare(image2, "Pad Only (sin limite)", "bicubic", "replicate", 1.0))
     print(f"\n  PadOnly Prepare: {W_in2}x{H_in2} -> model={mw2}x{mh2} sf={sf2:.4f}")
     img_bad2 = torch.randn(1, 1200, 2000, 3)
     try:
-        img_r, _, _, _, _, _, _ = restore.restore(img_bad2, ow2, oh2, sf2, mw2, mh2, "bicubic")
+        img_r, _, _, _, _, _, _ = _r(restore.restore(img_bad2, ow2, oh2, sf2, mw2, mh2, "bicubic"))
         shape_ok = img_r.shape == (1, H_in2, W_in2, 3)
         print(f"  PadOnly + modelo agranda (2000x1200): restored={img_r.shape[2]}x{img_r.shape[1]}",
               "OK" if shape_ok else "FAIL")
@@ -439,6 +447,132 @@ def test_fit_dimension() -> int:
 
 
 # ---------------------------------------------------------------------------
+# Test: VFX Frame Pad
+# ---------------------------------------------------------------------------
+
+def test_vfx_frame_pad() -> int:
+    """Verifica que VFXFramePad manipula correctamente los batches de frames.
+
+    Casos:
+    - prepend_first: batch 10, frames=3 -> 13 frames, 0-2 = frame 0 original
+    - trim_start: batch 13, frames=3 -> 10 frames = original[3:13]
+    - roundtrip: prepend 3 -> trim 3 = identidad
+    - bypass: frames=0 en ambos modos -> batch sin cambios
+    - mask: la mascara recibe la misma operacion
+    - trim_all: frames >= B -> 1 frame negro + frame_count=0
+    - device_preservation: salida en mismo device que entrada
+    """
+    node = VFXFramePad()
+    failures = 0
+
+    print("\n" + "=" * 70)
+    print("TEST: VFX Frame Pad (Prepend / Trim)")
+    print("=" * 70)
+
+    # ---- prepend_first ----
+    print("\n  [prepend_first]")
+    B, H, W = 10, 64, 64
+    img = torch.rand(B, H, W, 3)
+    img_out, _, fc = node.process(img, "prepend_first", 3)
+    if fc == 13 and img_out.shape == (13, H, W, 3):
+        # frames 3..12 must match original frames 0..9
+        frames_match = torch.allclose(img_out[3:], img)
+        clones_match = torch.allclose(img_out[0:1], img_out[1:3])
+        if frames_match and clones_match:
+            print(f"  [OK]    {B} frames + 3 prepend = {fc} frames, clones match, tail matches")
+        else:
+            failures += 1
+            print(f"  [FAIL]  frames_match={frames_match}, clones_match={clones_match}")
+    else:
+        failures += 1
+        print(f"  [FAIL]  expected shape=(13,64,64,3) fc=13, got {img_out.shape} fc={fc}")
+
+    # ---- trim_start ----
+    print("\n  [trim_start]")
+    img = torch.rand(13, H, W, 3)
+    img_out, _, fc = node.process(img, "trim_start", 3)
+    if fc == 10 and img_out.shape == (10, H, W, 3):
+        if torch.allclose(img_out, img[3:]):
+            print(f"  [OK]    13 frames - 3 trim = 10 frames, content matches original[3:13]")
+        else:
+            failures += 1
+            print(f"  [FAIL]  content mismatch after trim")
+    else:
+        failures += 1
+        print(f"  [FAIL]  expected shape=(10,64,64,3) fc=10, got {img_out.shape} fc={fc}")
+
+    # ---- roundtrip: prepend + trim = identidad ----
+    print("\n  [roundtrip]")
+    B = 10
+    img = torch.rand(B, H, W, 3)
+    mask = torch.rand(B, H, W)
+    img_p, msk_p, fc_p = node.process(img, "prepend_first", 3, mask)
+    img_t, msk_t, fc_t = node.process(img_p, "trim_start", 3, msk_p)
+    if fc_t == B and img_t.shape == img.shape:
+        img_ok = torch.allclose(img_t, img)
+        msk_ok = torch.allclose(msk_t, mask)
+        if img_ok and msk_ok:
+            print(f"  [OK]    prepend(3) + trim(3) = identity roundtrip")
+        else:
+            failures += 1
+            print(f"  [FAIL]  img_ok={img_ok}, msk_ok={msk_ok}")
+    else:
+        failures += 1
+        print(f"  [FAIL]  expected shape=({B},{H},{W},3) fc={B}, got {img_t.shape} fc={fc_t}")
+
+    # ---- bypass: frames=0 ----
+    print("\n  [bypass]")
+    img = torch.rand(5, H, W, 3)
+    mask = torch.rand(5, H, W)
+    for mode in ("prepend_first", "trim_start"):
+        img_out, msk_out, fc = node.process(img.clone(), mode, 0, mask.clone())
+        img_ok = torch.allclose(img_out, img)
+        msk_ok = torch.allclose(msk_out, mask)
+        fc_ok = fc == 5
+        if img_ok and msk_ok and fc_ok:
+            print(f"  [OK]    {mode} frames=0 -> bypass, image/mask unchanged, fc=5")
+        else:
+            failures += 1
+            print(f"  [FAIL]  {mode} frames=0: img_ok={img_ok} msk_ok={msk_ok} fc_ok={fc_ok}")
+
+    # ---- trim_all: frames >= B ----
+    print("\n  [trim_all]")
+    img = torch.rand(3, H, W, 3)
+    img_out, msk_out, fc = node.process(img, "trim_start", 5)
+    if fc == 0 and img_out.shape[0] == 1:
+        # single black frame
+        is_black = (img_out == 0).all()
+        if is_black:
+            print(f"  [OK]    trim_start frames=5 >= B=3 -> 1 black frame, fc=0")
+        else:
+            failures += 1
+            print(f"  [FAIL]  trim_all: frame is not black")
+    else:
+        failures += 1
+        print(f"  [FAIL]  trim_all: expected fc=0 and shape[0]=1, got fc={fc} shape={img_out.shape}")
+
+    # ---- device_preservation ----
+    print("\n  [device_preservation]")
+    # Use CPU only -- the device-preservation logic is identical regardless
+    # of backend and avoids CUDA compatibility issues on newer GPUs.
+    device = torch.device("cpu")
+    img_dev = torch.rand(4, H, W, 3, device=device)
+    mask_dev = torch.rand(4, H, W, device=device)
+    for mode in ("prepend_first", "trim_start"):
+        img_out, msk_out, fc = node.process(img_dev, mode, 2, mask_dev)
+        img_ok = img_out.device == device
+        msk_ok = msk_out.device == device
+        if img_ok and msk_ok:
+            print(f"  [OK]    {mode}: output on same device ({device})")
+        else:
+            failures += 1
+            print(f"  [FAIL]  {mode}: img device={img_out.device}, mask device={msk_out.device}")
+
+    print(f"\n  VFX Frame Pad: {failures} fallos")
+    return failures
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -482,6 +616,7 @@ def main() -> int:
         total += test_iclora_case()
         total += test_adaptive_restore()
         total += test_fit_dimension()
+        total += test_vfx_frame_pad()
 
     if run_presets:
         total += test_preset_roundtrip(resolutions)

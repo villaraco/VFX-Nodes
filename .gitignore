@@ -5,3 +5,9 @@ __pycache__/
 # IDE
 .vscode/
 .idea/
+
+# OpenCode
+.opencode/
+
+# Docs (generated)
+docs/

@@ -48,7 +48,7 @@ def _fit_area(W: int, H: int, max_area: int | None, multiple: int) -> tuple[int,
     aspect = W / H
     scale = (max_area / (W * H)) ** 0.5
     target_H = max(multiple, round(H * scale / multiple) * multiple)
-    target_W = max(multiple, round(target_H * aspect))
+    target_W = max(multiple, round(W * scale / multiple) * multiple)
 
     # Clamp if we overshot the area budget by more than 5 %
     while target_W * target_H > int(max_area * 1.05) and target_H > multiple:
@@ -266,7 +266,14 @@ class VFXPrepareResolution:
                 if mask_norm is not None
                 else torch.zeros((B, H, W), dtype=torch.float32, device=image.device)
             )
-            return (image, mask_out, orig_W, orig_H, scale, W, H)
+            result = (image, mask_out, orig_W, orig_H, scale, W, H)
+            vfx_info = [
+                f"in:    {orig_W}×{orig_H}",
+                f"model: {W}×{H}",
+                f"out:   {W}×{H}",
+                f"scale: {scale:.2f}",
+            ]
+            return {"ui": {"vfx_info": vfx_info}, "result": result}
 
         img_4d = image.permute(0, 3, 1, 2)
         padded = F.pad(img_4d, (0, pad_w, 0, pad_h), mode=pad_mode if pad_mode != "debug_red" else "constant", value=0.0)
@@ -288,7 +295,14 @@ class VFXPrepareResolution:
             )
 
         # model_w / model_h = pre-padding dimensions
-        return (image_padded, mask_out, orig_W, orig_H, scale, W, H)
+        result = (image_padded, mask_out, orig_W, orig_H, scale, W, H)
+        vfx_info = [
+            f"in:    {orig_W}×{orig_H}",
+            f"model: {W}×{H}",
+            f"out:   {W + pad_w}×{H + pad_h}",
+            f"scale: {scale:.2f}",
+        ]
+        return {"ui": {"vfx_info": vfx_info}, "result": result}
 
 
 # ============================================================================
@@ -371,8 +385,8 @@ class VFXRestoreResolution:
         # ---- effective dimensions (account for external upscaler) ----
         model_width_eff = round(model_width * external_upscale)
         model_height_eff = round(model_height * external_upscale)
-        orig_width_eff = round(orig_width * external_upscale)
-        orig_height_eff = round(orig_height * external_upscale)
+        orig_width_eff = orig_width
+        orig_height_eff = orig_height
 
         # ---- crop / adjust to model dimensions ----
         if H == model_height_eff and W == model_width_eff:
@@ -444,7 +458,18 @@ class VFXRestoreResolution:
                 (B, orig_height_eff, orig_width_eff), dtype=torch.float32, device=image.device,
             )
 
-        return (restored_image, restored_mask, cropped, raw_mask_cropped, max(orig_width_eff, orig_height_eff), orig_width_eff, orig_height_eff)
+        vfx_info = [
+            f"in:      {W}×{H}",
+            f"crop:    {crop_W}×{crop_H}",
+            f"restored: {orig_width_eff}×{orig_height_eff}",
+        ]
+        if external_upscale != 1.0:
+            vfx_info.append(f"ext_sc:  ×{external_upscale:.1f}")
+        if upscale_method == "passthrough":
+            vfx_info.append("upscale: passthrough")
+
+        result = (restored_image, restored_mask, cropped, raw_mask_cropped, max(orig_width_eff, orig_height_eff), orig_width_eff, orig_height_eff)
+        return {"ui": {"vfx_info": vfx_info}, "result": result}
 
 
 # ============================================================================
@@ -541,6 +566,121 @@ class VFXFitDimension:
         return (result_img, result_msk)
 
 
+# ============================================================================
+# Node 4 — VFX Frame Pad (Prepend / Trim)
+# ============================================================================
+
+class VFXFramePad:
+    """Utility node for frame-level padding and trimming in image batches.
+
+    Two modes:
+    * ``prepend_first`` -- repeats frame 0 N times at the start of the
+      batch.  Useful to give models extra settling frames that are
+      later discarded, avoiding luminance flicker on the first real
+      frames (known issue with LTX-2.3, Wan, etc.).
+    * ``trim_start`` -- removes the first N frames.  Useful to discard
+      settling frames added upstream and restore the original duration.
+
+    An optional mask receives the same operation.  When frames=0 the
+    node acts as a bypass.
+    """
+
+    DESCRIPTION = (
+        "Anade o recorta frames del inicio de un batch de imagenes/video. "
+        "Modo prepend_first: repite el primer frame N veces al inicio. "
+        "Modo trim_start: elimina los primeros N frames. "
+        "Ideal para eliminar parpadeos de luminancia en LTX-2.3/Wan: "
+        "prepend 3 frames de settling al inicio del control video, "
+        "genera con el modelo, y recorta los 3 frames sobrantes al final."
+    )
+
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "image": ("IMAGE", {"tooltip": "Batch de imagenes/video de entrada. Formato [B, H, W, C]."}),
+                "mode": (
+                    ["prepend_first", "trim_start"],
+                    {"default": "prepend_first",
+                     "tooltip": "prepend_first: repite el primer frame al inicio. trim_start: recorta los primeros frames."},
+                ),
+                "frames": (
+                    "INT",
+                    {"default": 3, "min": 0, "max": 1000, "step": 1,
+                     "tooltip": "Numero de frames a anadir (prepend) o recortar (trim). 0 = bypass."},
+                ),
+            },
+            "optional": {
+                "mask": ("MASK", {"tooltip": "Mascara opcional. Recibe la misma operacion que la imagen."}),
+            },
+        }
+
+    RETURN_TYPES = ("IMAGE", "MASK", "INT")
+    RETURN_NAMES = ("image", "mask", "frame_count")
+    FUNCTION = "process"
+    CATEGORY = "VFX"
+
+    def process(self, image, mode, frames, mask=None):
+        B = image.shape[0]
+
+        if mask is not None:
+            mask = _normalize_mask(mask, B)
+
+        if frames == 0:
+            return self._bypass(image, mask, B)
+
+        if mode == "prepend_first":
+            return self._prepend(image, mask, frames, B)
+        else:
+            return self._trim(image, mask, frames, B)
+
+    def _bypass(self, image, mask, B):
+        if mask is None:
+            mask = torch.zeros(
+                (B, image.shape[1], image.shape[2]),
+                dtype=image.dtype, device=image.device,
+            )
+        return (image, mask, B)
+
+    def _prepend(self, image, mask, frames, B):
+        first_frame = image[0:1]
+        clones = first_frame.repeat(frames, 1, 1, 1)
+        result = torch.cat([clones, image], dim=0)
+
+        if mask is not None:
+            first_mask = mask[0:1]
+            mask_clones = first_mask.repeat(frames, 1, 1)
+            result_mask = torch.cat([mask_clones, mask], dim=0)
+        else:
+            result_mask = torch.zeros(
+                (B + frames, image.shape[1], image.shape[2]),
+                dtype=image.dtype, device=image.device,
+            )
+
+        return (result, result_mask, B + frames)
+
+    def _trim(self, image, mask, frames, B):
+        if frames >= B:
+            result = image[0:1] * 0
+            result_mask = torch.zeros(
+                (1, image.shape[1], image.shape[2]),
+                dtype=image.dtype, device=image.device,
+            )
+            return (result, result_mask, 0)
+
+        result = image[frames:]
+
+        if mask is not None:
+            result_mask = mask[frames:]
+        else:
+            result_mask = torch.zeros(
+                (B - frames, image.shape[1], image.shape[2]),
+                dtype=image.dtype, device=image.device,
+            )
+
+        return (result, result_mask, B - frames)
+
+
 # ------------------------------------------------------------------
 # Category colors
 # ------------------------------------------------------------------
@@ -553,16 +693,20 @@ CATEGORY_COLORS = {
 # Registration
 # ============================================================================
 
+WEB_DIRECTORY = "js"
+
 NODE_CLASS_MAPPINGS = {
     "VFXPrepareResolution": VFXPrepareResolution,
     "VFXRestoreResolution": VFXRestoreResolution,
     "VFXFitDimension": VFXFitDimension,
+    "VFXFramePad": VFXFramePad,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "VFXPrepareResolution": "🔶 VFX Resolution (Prepare)",
     "VFXRestoreResolution": "🔶 VFX Resolution (Restore)",
     "VFXFitDimension": "🔶 VFX Fit Dimension",
+    "VFXFramePad": "🔶 VFX Frame Pad (Prepend/Trim)",
 }
 
 # ------------------------------------------------------------------

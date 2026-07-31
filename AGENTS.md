@@ -1,5 +1,11 @@
 # AGENTS.md -- VFX-Nodes Project Context for OpenCode
 
+## User
+
+**Name:** Mike
+**ComfyUI install:** `E:\Comfyui\ComfyUI-Easy-Install\ComfyUI\custom_nodes\VFX_Nodes\`
+**Obsidian Vault:** `E:\Obsidian\Vault-DIARIO-OpenCode\`
+
 ## Project
 
 VFX-Nodes: Custom nodes for ComfyUI that ensure pixel-perfect resolution roundtrip
@@ -17,12 +23,13 @@ Original Image  →  [VFXPrepareResolution]  →  AI Model  →  [VFXRestoreReso
 
 ```
 VFX-Nodes/
-├── __init__.py              Main nodes: VFXPrepareResolution, VFXRestoreResolution, VFXFitDimension
+├── __init__.py              Main nodes: VFXPrepareResolution, VFXRestoreResolution, VFXFitDimension, VFXFramePad
 ├── corrections.py           Optional: VFXCorrections (SIFT align + color match + blend)
 ├── validate_roundtrip.py    Standalone test suite (no ComfyUI needed)
 ├── requirements.txt         opencv-contrib-python (optional, for corrections node)
 ├── js/
 │   └── vfx_colors.js        ComfyUI UI colors (orange theme for VFX category)
+├── docs/                    Project specifications (linked from Obsidian vault)
 ├── README.md                User-facing documentation
 └── AGENTS.md                This file
 ```
@@ -61,3 +68,31 @@ CI/CD: exit code 0 = all pass, exit code 1 = failures.
 ## Integration with ComfyUI
 
 Copy the VFX-Nodes folder to `ComfyUI/custom_nodes/VFX_Nodes/`. The `__init__.py` registers nodes via NODE_CLASS_MAPPINGS. The `js/` folder provides UI theme colors.
+
+## Obsidian Vault Documentation
+
+When asked to document the project, write notes in the Obsidian vault at
+`E:\Obsidian\Vault-DIARIO-OpenCode\`. The project-specific docs live in
+`Proyectos/VFX-Nodes/`. Daily session summaries go in `Diario/YYYY-MM-DD.md`.
+
+### Vault structure (relevant paths)
+
+```
+Vault-DIARIO-OpenCode/
+├── Diario/                  Daily notes (YYYY-MM-DD.md)
+│   └── 2026-07-30.md        Example: VFXFramePad implementation session
+├── Proyectos/
+│   └── VFX-Nodes/           Project documentation
+│       ├── VFX-Nodes.md         Main project hub (version, changelog, links)
+│       ├── VFXFramePad.md       New node documentation
+│       ├── Instalación VFX_NODES.md  Installation guide
+│       └── VFX Nodes - Correcciones de Bugs.md
+└── Templates/               Note templates
+```
+
+### Documentation workflow
+
+1. Update `Proyectos/VFX-Nodes/VFX-Nodes.md` — bump version, update changelog
+2. Create/update node-specific doc in `Proyectos/VFX-Nodes/` (e.g., `VFXFramePad.md`)
+3. Create daily note in `Diario/YYYY-MM-DD.md` with session summary
+4. If new node or node count changed, update `Instalación VFX_NODES.md`
