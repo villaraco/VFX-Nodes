@@ -38,6 +38,40 @@ Post-procesado VFX con 3 etapas toggleables:
 2. Emparejado de color Reinhard (espacio LAB)
 3. Mezcla seamless (Poisson blending + alpha-blend fallback)
 
+### VFXFluxBatchPrompts (nodo)
+Generador batch de prompts para campanas Flux2. Lee un archivo markdown con
+prompts en formato tabla, parsea las piezas y genera salidas de `prompt` +
+`seed` + `filename_prefix` para cada combinacion prompt x variacion.
+
+- **Modo manual**: ajusta `prompt_index` y `variation` para elegir la combinacion.
+- **Modo auto-queue**: activa `auto_queue` y lanza una vez; el JS companion
+  (`js/vfx_colors.js`) encola el resto en daisy-chain.
+- **Seed**: `base_seed + prompt_index * variations + variation`.
+
+Salidas: `prompt`, `negative_prompt`, `seed`, `piece_name`, `piece_number`,
+`total_prompts`, `section`, `filename_prefix`.
+
+## Scripts auxiliares
+
+### queue_flux_batch.py (CLI)
+Encola **todas** las combinaciones prompt x variacion directamente via la API
+HTTP de ComfyUI (`POST /prompt`), sin usar la interfaz grafica. Util para lanzar
+campañas completas de un tiron.
+
+```bash
+python queue_flux_batch.py workflow.json                # encola todo
+python queue_flux_batch.py workflow.json --dry-run      # solo muestra lo que haria
+python queue_flux_batch.py workflow.json --start-index 10 --start-variation 2
+```
+
+### validate_flux_batch.py (tests)
+Suite de tests standalone del parser de markdown y del nodo `VFXFluxBatchPrompts`.
+No requiere ComfyUI corriendo.
+
+```bash
+python validate_flux_batch.py
+```
+
 ## Guia de uso: VFXFramePad
 
 El caso principal es eliminar parpadeos de luminancia en LTX-2.3 / Wan / Hunyuan.
@@ -95,11 +129,33 @@ consiste en darle frames extra al modelo y luego descartarlos.
 | Flux2Klein | 768x768 | 32 |
 | LTX-2.3 | 1024x576 | 32 |
 | LTX-2.3 + ICLORA | 1024x576 | 64 |
+| MiniMax H3 | 1344x768 | 32 |
 | Custom (multiple 64) | sin limite | 64 |
 | SD 1.5 / SDXL | 1024x1024 | 64 |
 | Qwen-Image | 1024x1024 | 16 |
 | Hunyuan Video | 960x544 | 16 |
 | Pad Only (sin limite) | sin limite | 32 |
+
+### Grid de frames (video)
+
+Algunos modelos de video exigen un numero de frames concreto (grid temporal).
+`VFXPrepareResolution` lo alinea automaticamente en modo `video`:
+
+| Preset | Grid de frames | Ejemplo |
+|---|---|---|
+| MiniMax H3 | 5 + 17n (17x k + 5) | 240f -> 243f |
+| LTX-2.3 | 1 + 8n (8x k + 1) | 50f -> 57f |
+
+### Modo reference_frame
+
+El nodo `VFXPrepareResolution` tiene un selector `mode`:
+- **video** (por defecto): procesa todos los frames (resolucion + grid de frames).
+- **reference_frame**: extrae un unico frame en un timestamp (`reference_time`
+  en segundos x `fps`) y aplica el MISMO pipeline espacial. Util para generar
+  imagenes de referencia/keyframes para MiniMax H3 Ref2VA.
+
+Salidas nuevas: `input_frame_count`, `required_frame_count`,
+`reference_frame_index`, `output_width`, `output_height`, `length_seconds`.
 
 ## Instalacion
 
@@ -116,6 +172,9 @@ pip install -r requirements.txt
 ```bash
 # Todos los tests
 python validate_roundtrip.py
+
+# Tests del nodo FluxBatch
+python validate_flux_batch.py
 
 # Solo resoluciones especificas
 python validate_roundtrip.py --resolutions 1920x1080,3840x2160

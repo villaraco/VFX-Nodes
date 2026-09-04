@@ -125,8 +125,8 @@ def test_padding_roundtrip(resolutions: list[tuple[int, int]]) -> int:
             image = _random_image(B, H, W)
             mask = _random_mask(B, H, W)
 
-            img_p, msk_p, ow, oh, sf, mw, mh = _r(prepare.prepare(
-                image, preset_name, "bicubic", pad_mode, 1.0, mask,
+            img_p, msk_p, ow, oh, sf, mw, mh, _, _, _, _, _, _ = _r(prepare.prepare(
+                image, preset_name, "video", "bicubic", pad_mode, 1.0, 24, 0.0, mask,
             ))
             img_r, msk_r, _, _, _, _, _ = _r(restore.restore(
                 img_p, ow, oh, sf, mw, mh, "bicubic", mask=msk_p,
@@ -176,8 +176,8 @@ def test_preset_roundtrip(resolutions: list[tuple[int, int]]) -> int:
             mask = _random_mask(B, H, W)
 
             try:
-                img_p, msk_p, ow, oh, sf, mw, mh = _r(prepare.prepare(
-                    image, preset_name, "bicubic", "replicate", 1.0, mask,
+                img_p, msk_p, ow, oh, sf, mw, mh, _, _, _, _, _, _ = _r(prepare.prepare(
+                    image, preset_name, "video", "bicubic", "replicate", 1.0, 24, 0.0, mask,
                 ))
 
                 # Verify padded image is multiple-aligned
@@ -255,8 +255,8 @@ def test_iclora_case() -> int:
         for W, H in problematic:
             image = _random_image(1, H, W)
             try:
-                img_p, _, _, _, _, mw, mh = _r(prepare.prepare(
-                    image, preset_name, "bicubic", "replicate", 1.0,
+                img_p, _, _, _, _, mw, mh, _, _, _, _, _, _ = _r(prepare.prepare(
+                    image, preset_name, "video", "bicubic", "replicate", 1.0, 24, 0.0,
                 ))
                 # El modelo ve la imagen padded — el latente se calcula sobre esas dimensiones
                 pW, pH = img_p.shape[2], img_p.shape[1]
@@ -307,7 +307,7 @@ def test_adaptive_restore() -> int:
     # Caso: el modelo agranda la salida (Flux2Klein 992x576 -> 1328x768)
     W_in, H_in = 1280, 736
     image = _random_image(1, H_in, W_in)
-    _, _, ow, oh, sf, mw, mh = _r(prepare.prepare(image, "Flux2Klein", "bicubic", "replicate", 1.0))
+    _, _, ow, oh, sf, mw, mh, input_fc, req_fc, _, _, _, _ = _r(prepare.prepare(image, "Flux2Klein", "video", "bicubic", "replicate", 1.0, 24, 0.0))
     print(f"  Prepare: {W_in}x{H_in} -> model={mw}x{mh} sf={sf:.4f}")
 
     # Simular que el modelo devuelve 1328x768 en vez de 992x576
@@ -380,7 +380,7 @@ def test_adaptive_restore() -> int:
     # Caso: pad-only + modelo agranda
     W_in2, H_in2 = 1920, 1080
     image2 = _random_image(1, H_in2, W_in2)
-    _, _, ow2, oh2, sf2, mw2, mh2 = _r(prepare.prepare(image2, "Pad Only (sin limite)", "bicubic", "replicate", 1.0))
+    _, _, ow2, oh2, sf2, mw2, mh2, _, _, _, _, _, _ = _r(prepare.prepare(image2, "Pad Only (sin limite)", "video", "bicubic", "replicate", 1.0, 24, 0.0))
     print(f"\n  PadOnly Prepare: {W_in2}x{H_in2} -> model={mw2}x{mh2} sf={sf2:.4f}")
     img_bad2 = torch.randn(1, 1200, 2000, 3)
     try:

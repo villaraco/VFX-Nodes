@@ -3,7 +3,7 @@
 ## User
 
 **Name:** Mike
-**ComfyUI install:** `E:\Comfyui\ComfyUI-Easy-Install\ComfyUI\custom_nodes\VFX_Nodes\`
+**ComfyUI install:** `E:\Comfyui\ComfyUI-Easy-Install_E_01\ComfyUI\custom_nodes\VFX_Nodes\`
 **Obsidian Vault (Diario):** `E:\Obsidian\Vault-DIARIO-OpenCode\`
 **Obsidian Vault (ComfyUI):** `E:\Obsidian\Vault-Comfyui\`
 
@@ -125,8 +125,8 @@ After every working session, run through this checklist:
    - Workflow tip or warning to document
 6. **Deploy** — Copy updated files to ComfyUI install:
    ```powershell
-   Copy-Item "E:\OpenCode\Proyecto-LAB\VFX-Nodes\__init__.py" -Destination "E:\Comfyui\ComfyUI-Easy-Install\ComfyUI\custom_nodes\VFX_Nodes\__init__.py"
-   Copy-Item "E:\OpenCode\Proyecto-LAB\VFX-Nodes\js\*" -Destination "E:\Comfyui\ComfyUI-Easy-Install\ComfyUI\custom_nodes\VFX_Nodes\js\" -Recurse
+   Copy-Item "E:\OpenCode\Proyecto-LAB\VFX-Nodes\__init__.py" -Destination "E:\Comfyui\ComfyUI-Easy-Install_E_01\ComfyUI\custom_nodes\VFX_Nodes\__init__.py"
+   Copy-Item "E:\OpenCode\Proyecto-LAB\VFX-Nodes\js\*" -Destination "E:\Comfyui\ComfyUI-Easy-Install_E_01\ComfyUI\custom_nodes\VFX_Nodes\js\" -Recurse
    ```
 
 ### Documentation workflow (detailed)

@@ -59,6 +59,14 @@ def _fit_area(W: int, H: int, max_area: int | None, multiple: int) -> tuple[int,
     return target_W, target_H, scale_factor
 
 
+def _next_grid_frames(n_frames: int, base: int, offset: int) -> int:
+    """Return the smallest value >= n_frames that satisfies base*k + offset."""
+    if n_frames <= offset:
+        return offset
+    k = (n_frames - offset + base - 1) // base
+    return base * k + offset
+
+
 def _resample(tensor_4d: torch.Tensor, out_H: int, out_W: int, mode: str) -> torch.Tensor:
     """Resample [B, C, H, W] tensor to (out_H, out_W).
 
@@ -118,11 +126,13 @@ MODEL_PRESETS: dict[str, dict] = {
         "max_area": 1024 * 576,
         "multiple": 32,
         "note": "1024×576 (16:9) / 768×768 (1:1) / 576×1024 (9:16)",
+        "frame_grid": (8, 1),
     },
     "LTX-2.3 + ICLORA": {
         "max_area": 1024 * 576,
         "multiple": 64,
         "note": "Multiplo 64 obligatorio — ControlNet UNION requiere latente par. 1280×768 / 1024×576 / 768×768",
+        "frame_grid": (8, 1),
     },
     "Custom (multiple 64)": {
         "max_area": None,
@@ -143,6 +153,12 @@ MODEL_PRESETS: dict[str, dict] = {
         "max_area": 960 * 544,
         "multiple": 16,
         "note": "960×544 (16:9) / 720×720 (1:1)",
+    },
+    "MiniMax H3": {
+        "max_area": 1344 * 768,
+        "multiple": 32,
+        "note": "1344×768 (16:9) / 768×1344 (9:16) / 768×768 (1:1). Lado corto ≤ 768.",
+        "frame_grid": (17, 5),
     },
     "Pad Only (sin limite)": {
         "max_area": None,
@@ -189,18 +205,32 @@ class VFXPrepareResolution:
                     list(MODEL_PRESETS.keys()),
                     {"default": "Flux.1 / Flux2", "tooltip": "Target AI model. Determines max working area and VAE multiple alignment."},
                 ),
+                "mode": (
+                    ["video", "reference_frame"],
+                    {"default": "video", "tooltip": "video: full batch processing with resolution + frame grid. reference_frame: extract a single frame at a specific timestamp for use as model reference (MiniMax H3 Ref2VA, keyframes, etc.). Raw extraction — no spatial downscale."},
+                ),
                 "downscale_method": (
                     ["auto", "lanczos", "bicubic", "bilinear", "area"],
-                    {"default": "auto", "tooltip": "Interpolation when reducing: auto = area for downscale, bicubic for upscale."},
+                    {"default": "auto", "tooltip": "Interpolation when reducing: auto = area for downscale, bicubic for upscale. Ignored in reference_frame mode."},
                 ),
                 "pad_mode": (
                     ["replicate", "reflect", "constant", "debug_red"],
-                    {"default": "replicate", "tooltip": "How padding pixels are generated. replicate extends edge (VFX default). debug_red fills with red for testing."},
+                    {"default": "replicate", "tooltip": "How padding pixels are generated. replicate extends edge (VFX default). debug_red fills with red for testing. Ignored in reference_frame mode."},
                 ),
                 "quality": (
                     "FLOAT",
                     {"default": 1.0, "min": 0.5, "max": 3.0, "step": 0.1,
-                     "tooltip": "Resolution quality multiplier. 1.0 = preset default. Increase to give the model more pixels (may hit VRAM limits). Does NOT affect the VAE multiple alignment."},
+                     "tooltip": "Resolution quality multiplier. 1.0 = preset default. Ignored in reference_frame mode."},
+                ),
+                "fps": (
+                    "INT",
+                    {"default": 24, "min": 1, "max": 240,
+                     "tooltip": "FPS of the input sequence. Used to convert reference_time to frame index and required_frame_count to length_seconds."},
+                ),
+                "reference_time": (
+                    "FLOAT",
+                    {"default": 0.0, "min": 0.0, "max": 999.0, "step": 0.001,
+                     "tooltip": "Time in seconds to extract the reference frame. 0.000 = first frame. Only used in reference_frame mode."},
                 ),
             },
             "optional": {
@@ -208,7 +238,7 @@ class VFXPrepareResolution:
             },
         }
 
-    RETURN_TYPES = ("IMAGE", "MASK", "INT", "INT", "FLOAT", "INT", "INT")
+    RETURN_TYPES = ("IMAGE", "MASK", "INT", "INT", "FLOAT", "INT", "INT", "INT", "INT", "INT", "INT", "INT", "FLOAT")
     RETURN_NAMES = (
         "image_processed",
         "mask_processed",
@@ -217,6 +247,12 @@ class VFXPrepareResolution:
         "scale_factor",
         "model_width",
         "model_height",
+        "input_frame_count",
+        "required_frame_count",
+        "reference_frame_index",
+        "output_width",
+        "output_height",
+        "length_seconds",
     )
     FUNCTION = "prepare"
     CATEGORY = "VFX"
@@ -225,83 +261,125 @@ class VFXPrepareResolution:
         self,
         image: torch.Tensor,
         model_preset: str,
+        mode: str,
         downscale_method: str,
         pad_mode: str,
         quality: float,
+        fps: int,
+        reference_time: float,
         mask: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor, int, int, float, int, int]:
+    ) -> tuple[torch.Tensor, torch.Tensor, int, int, float, int, int, int, int, int, int, int, float]:
         B, orig_H, orig_W, C = image.shape
-        preset = MODEL_PRESETS[model_preset]
-        max_area = preset["max_area"]
-        multiple = preset["multiple"]
 
-        # ---- effective area (quality slider scales the preset's area budget) ----
-        effective_area = None if max_area is None else int(max_area * quality)
+        # ---- common spatial pipeline (shared by both modes) ----
+        def _apply_spatial(img, msk, preset, B_eff):
+            max_area = preset["max_area"]
+            multiple = preset["multiple"]
+            iH, iW = img.shape[1], img.shape[2]
 
-        # ---- fit to model area ----
-        fit_W, fit_H, scale = _fit_area(orig_W, orig_H, effective_area, multiple)
+            effective_area = None if max_area is None else int(max_area * quality)
+            fit_W, fit_H, scl = _fit_area(iW, iH, effective_area, multiple)
 
-        # ---- downscale if the image exceeds the area budget ----
-        if scale < 1.0:
-            img_4d = image.permute(0, 3, 1, 2)
-            image = _resample(img_4d, fit_H, fit_W, downscale_method).permute(0, 2, 3, 1)
-        else:
-            fit_W, fit_H = orig_W, orig_H
+            if scl < 1.0:
+                img = _resample(img.permute(0, 3, 1, 2), fit_H, fit_W, downscale_method).permute(0, 2, 3, 1)
+            else:
+                fit_W, fit_H = iW, iH
 
-        # ---- mask (downscale with nearest to keep hard edges) ----
-        mask_norm = _normalize_mask(mask, B) if mask is not None else None
-        if scale < 1.0 and mask_norm is not None:
-            mask_norm = _resample(mask_norm.unsqueeze(1), fit_H, fit_W, "nearest").squeeze(1)
-        elif scale < 1.0:
-            mask_norm = torch.zeros((B, fit_H, fit_W), dtype=torch.float32, device=image.device)
+            msk_norm = _normalize_mask(msk, B_eff) if msk is not None else None
+            if scl < 1.0 and msk_norm is not None:
+                msk_norm = _resample(msk_norm.unsqueeze(1), fit_H, fit_W, "nearest").squeeze(1)
+            elif scl < 1.0:
+                msk_norm = torch.zeros((B_eff, fit_H, fit_W), dtype=torch.float32, device=img.device)
 
-        # ---- asymmetric padding (right + bottom only → top-left anchor) ----
-        W, H = fit_W, fit_H
-        pad_w = (multiple - (W % multiple)) % multiple
-        pad_h = (multiple - (H % multiple)) % multiple
+            W_m, H_m = fit_W, fit_H
+            pad_w = (multiple - (W_m % multiple)) % multiple
+            pad_h = (multiple - (H_m % multiple)) % multiple
+            out_W, out_H = W_m + pad_w, H_m + pad_h
 
-        if pad_w == 0 and pad_h == 0:
-            mask_out = (
-                mask_norm
-                if mask_norm is not None
-                else torch.zeros((B, H, W), dtype=torch.float32, device=image.device)
-            )
-            result = (image, mask_out, orig_W, orig_H, scale, W, H)
+            if pad_w > 0 or pad_h > 0:
+                img4 = img.permute(0, 3, 1, 2)
+                p = F.pad(img4, (0, pad_w, 0, pad_h),
+                          mode=pad_mode if pad_mode != "debug_red" else "constant", value=0.0)
+                if pad_mode == "debug_red":
+                    if pad_h > 0:
+                        p[:, 0, -pad_h:, :] = 1.0
+                    if pad_w > 0:
+                        p[:, 0, :, -pad_w:] = 1.0
+                img = p.permute(0, 2, 3, 1)
+
+                if msk_norm is not None:
+                    msk_out = F.pad(msk_norm.unsqueeze(1), (0, pad_w, 0, pad_h),
+                                    mode="constant", value=0.0).squeeze(1)
+                else:
+                    msk_out = torch.zeros((B_eff, out_H, out_W), dtype=torch.float32, device=img.device)
+            else:
+                msk_out = (
+                    msk_norm if msk_norm is not None
+                    else torch.zeros((B_eff, out_H, out_W), dtype=torch.float32, device=img.device)
+                )
+
+            return img, msk_out, W_m, H_m, scl, out_W, out_H
+
+        # ---- reference frame mode: extract one frame + same spatial pipeline ----
+        if mode == "reference_frame":
+            frame_idx = max(0, min(B - 1, round(reference_time * fps)))
+
+            ref_img = image[frame_idx:frame_idx + 1]
+
+            if mask is not None:
+                mask_norm = _normalize_mask(mask, B)
+                ref_msk = mask_norm[frame_idx:frame_idx + 1]
+            else:
+                ref_msk = None
+
+            preset = MODEL_PRESETS[model_preset]
+            ref_img, msk_out, W_m, H_m, scl, out_W, out_H = _apply_spatial(ref_img, ref_msk, preset, 1)
+
             vfx_info = [
-                f"in:    {orig_W}×{orig_H}",
-                f"model: {W}×{H}",
-                f"out:   {W}×{H}",
-                f"scale: {scale:.2f}",
+                f"mode:  reference_frame",
+                f"time:  {reference_time:.3f}s @ {fps}fps → frame {frame_idx} / {B - 1}",
+                f"spatial: {orig_W}×{orig_H} → {W_m}×{H_m} → {out_W}×{out_H}  scale: {scl:.2f}",
             ]
+            result = (ref_img, msk_out, orig_W, orig_H, scl, W_m, H_m, 1, 1, frame_idx, out_W, out_H, 1.0 / fps)
             return {"ui": {"vfx_info": vfx_info}, "result": result}
 
-        img_4d = image.permute(0, 3, 1, 2)
-        padded = F.pad(img_4d, (0, pad_w, 0, pad_h), mode=pad_mode if pad_mode != "debug_red" else "constant", value=0.0)
-        if pad_mode == "debug_red":
-            if pad_h > 0:
-                padded[:, 0, -pad_h:, :] = 1.0    # red channel on bottom rows
-            if pad_w > 0:
-                padded[:, 0, :, -pad_w:] = 1.0    # red channel on right columns
-        image_padded = padded.permute(0, 2, 3, 1)
+        # ---- video mode: spatial pipeline + frame grid ----
+        preset = MODEL_PRESETS[model_preset]
+        image, mask_out, W, H, scale, out_W, out_H = _apply_spatial(image, mask, preset, B)
 
-        if mask_norm is not None:
-            mask_out = F.pad(
-                mask_norm.unsqueeze(1), (0, pad_w, 0, pad_h),
-                mode="constant", value=0.0,
-            ).squeeze(1)
+        frame_grid = preset.get("frame_grid", None)
+        if frame_grid is not None:
+            required_frames = _next_grid_frames(B, frame_grid[0], frame_grid[1])
         else:
-            mask_out = torch.zeros(
-                (B, H + pad_h, W + pad_w), dtype=torch.float32, device=image.device,
-            )
+            required_frames = B
 
-        # model_w / model_h = pre-padding dimensions
-        result = (image_padded, mask_out, orig_W, orig_H, scale, W, H)
+        # ---- frame prepend (reach model temporal grid — video only) ----
+        if B > 1 and required_frames > B:
+            to_prepend = required_frames - B
+            first_frame = image[0:1]
+            clones = first_frame.repeat(to_prepend, 1, 1, 1)
+            image = torch.cat([clones, image], dim=0)
+
+            if mask_out is not None and mask_out.shape[0] == B:
+                first_mask = mask_out[0:1]
+                mask_clones = first_mask.repeat(to_prepend, 1, 1)
+                mask_out = torch.cat([mask_clones, mask_out], dim=0)
+            else:
+                mask_out = torch.zeros(
+                    (required_frames, out_H, out_W),
+                    dtype=torch.float32, device=image.device,
+                )
+
+        result = (image, mask_out, orig_W, orig_H, scale, W, H, B, required_frames, 0, out_W, out_H, required_frames / fps)
         vfx_info = [
             f"in:    {orig_W}×{orig_H}",
             f"model: {W}×{H}",
-            f"out:   {W + pad_w}×{H + pad_h}",
+            f"out:   {out_W}×{out_H}",
             f"scale: {scale:.2f}",
         ]
+        if frame_grid is not None:
+            vfx_info.append(f"frames: {B}→{required_frames} (grid {frame_grid[1]}+{frame_grid[0]}n)")
+            vfx_info.append(f"length: {required_frames / fps:.3f}s")
         return {"ui": {"vfx_info": vfx_info}, "result": result}
 
 
@@ -360,6 +438,11 @@ class VFXRestoreResolution:
             },
             "optional": {
                 "mask": ("MASK", {"tooltip": "Optional processed mask for inpainting workflows."}),
+                "original_frame_count": (
+                    "INT",
+                    {"forceInput": True, "default": 0,
+                     "tooltip": "Connect from Prepare's input_frame_count output. Restores the sequence to its original length by trimming prepended grid-alignment frames."},
+                ),
             },
         }
 
@@ -379,6 +462,7 @@ class VFXRestoreResolution:
         upscale_method: str,
         external_upscale: float = 1.0,
         mask: torch.Tensor | None = None,
+        original_frame_count: int = 0,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         B, H, W, C = image.shape
 
@@ -467,6 +551,17 @@ class VFXRestoreResolution:
             vfx_info.append(f"ext_sc:  ×{external_upscale:.1f}")
         if upscale_method == "passthrough":
             vfx_info.append("upscale: passthrough")
+
+        # ---- frame trim (remove prepended grid-alignment frames) ----
+        if original_frame_count > 0:
+            in_frames = restored_image.shape[0]
+            if in_frames > original_frame_count:
+                to_trim = in_frames - original_frame_count
+                restored_image = restored_image[to_trim:]
+                restored_mask = restored_mask[to_trim:]
+                cropped = cropped[to_trim:]
+                raw_mask_cropped = raw_mask_cropped[to_trim:]
+                vfx_info.append(f"frames: {in_frames}→{original_frame_count} (trimmed {to_trim})")
 
         result = (restored_image, restored_mask, cropped, raw_mask_cropped, max(orig_width_eff, orig_height_eff), orig_width_eff, orig_height_eff)
         return {"ui": {"vfx_info": vfx_info}, "result": result}
@@ -695,11 +790,17 @@ CATEGORY_COLORS = {
 
 WEB_DIRECTORY = "js"
 
+try:
+    from .flux_batch import VFXFluxBatchPrompts  # noqa: E402
+except ImportError:
+    from flux_batch import VFXFluxBatchPrompts  # standalone/tests fallback  # noqa: E402
+
 NODE_CLASS_MAPPINGS = {
     "VFXPrepareResolution": VFXPrepareResolution,
     "VFXRestoreResolution": VFXRestoreResolution,
     "VFXFitDimension": VFXFitDimension,
     "VFXFramePad": VFXFramePad,
+    "VFXFluxBatchPrompts": VFXFluxBatchPrompts,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -707,6 +808,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "VFXRestoreResolution": "🔶 VFX Resolution (Restore)",
     "VFXFitDimension": "🔶 VFX Fit Dimension",
     "VFXFramePad": "🔶 VFX Frame Pad (Prepend/Trim)",
+    "VFXFluxBatchPrompts": "🔶 VFX Flux Batch Prompts",
 }
 
 # ------------------------------------------------------------------
