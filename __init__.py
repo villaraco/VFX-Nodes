@@ -35,25 +35,57 @@ def _normalize_mask(mask: torch.Tensor, target_batch: int) -> torch.Tensor:
     return mask.to(dtype=torch.float32)
 
 
-def _fit_area(W: int, H: int, max_area: int | None, multiple: int) -> tuple[int, int, float]:
-    """Return (new_W, new_H, scale_factor) to fit within max_area.
+def _fit_area(
+    W: int,
+    H: int,
+    max_area: int | None,
+    multiple: int,
+    max_short_side: int | None = None,
+) -> tuple[int, int, float]:
+    """Return (new_W, new_H, scale_factor) to fit the model canvas.
 
     Preserves aspect ratio.  Rounds both dimensions to the nearest
-    multiple.  When max_area is None or the input already fits,
-    scale_factor is 1.0.
+    multiple.  Two independent limits are honoured:
+
+    * ``max_area``       -- total pixel budget.
+    * ``max_short_side`` -- hard cap on the shortest edge.  Some models
+      cap their native canvas (e.g. MiniMax H3 at 768px short side), so
+      an area budget alone is not enough: a square input can fit the
+      area while still exceeding the short-side limit.
+
+    When both limits are None, or the input already fits, scale_factor
+    is 1.0.
     """
-    if max_area is None or W * H <= max_area:
+    scale = 1.0
+    if max_area is not None and W * H > max_area:
+        scale = min(scale, (max_area / (W * H)) ** 0.5)
+    if max_short_side is not None and min(W, H) > max_short_side:
+        scale = min(scale, max_short_side / min(W, H))
+
+    if scale >= 1.0:
         return W, H, 1.0
 
     aspect = W / H
-    scale = (max_area / (W * H)) ** 0.5
     target_H = max(multiple, round(H * scale / multiple) * multiple)
     target_W = max(multiple, round(W * scale / multiple) * multiple)
 
     # Clamp if we overshot the area budget by more than 5 %
-    while target_W * target_H > int(max_area * 1.05) and target_H > multiple:
+    while max_area is not None and target_W * target_H > int(max_area * 1.05) and target_H > multiple:
         target_H -= multiple
         target_W = max(multiple, round(target_H * aspect))
+
+    # Clamp the short side: rounding to the nearest multiple can push it
+    # back above the cap (e.g. 1080² -> 1024²).  Shrink the long edge and
+    # recompute the other from the aspect ratio until it fits.
+    while max_short_side is not None and min(target_W, target_H) > max_short_side:
+        if target_W >= target_H:
+            target_W -= multiple
+            target_H = max(multiple, round(target_W / aspect / multiple) * multiple)
+        else:
+            target_H -= multiple
+            target_W = max(multiple, round(target_H * aspect / multiple) * multiple)
+        if target_W <= multiple or target_H <= multiple:
+            break
 
     scale_factor = target_W / W
     return target_W, target_H, scale_factor
@@ -157,6 +189,8 @@ MODEL_PRESETS: dict[str, dict] = {
     "MiniMax H3": {
         "max_area": 1344 * 768,
         "multiple": 32,
+        "max_short_side": 768,
+        "max_frames": 362,
         "note": "1344×768 (16:9) / 768×1344 (9:16) / 768×768 (1:1). Lado corto ≤ 768.",
         "frame_grid": (17, 5),
     },
@@ -275,10 +309,11 @@ class VFXPrepareResolution:
         def _apply_spatial(img, msk, preset, B_eff):
             max_area = preset["max_area"]
             multiple = preset["multiple"]
+            max_short_side = preset.get("max_short_side")
             iH, iW = img.shape[1], img.shape[2]
 
             effective_area = None if max_area is None else int(max_area * quality)
-            fit_W, fit_H, scl = _fit_area(iW, iH, effective_area, multiple)
+            fit_W, fit_H, scl = _fit_area(iW, iH, effective_area, multiple, max_short_side)
 
             if scl < 1.0:
                 img = _resample(img.permute(0, 3, 1, 2), fit_H, fit_W, downscale_method).permute(0, 2, 3, 1)
@@ -348,10 +383,13 @@ class VFXPrepareResolution:
         image, mask_out, W, H, scale, out_W, out_H = _apply_spatial(image, mask, preset, B)
 
         frame_grid = preset.get("frame_grid", None)
-        if frame_grid is not None:
+        if frame_grid is not None and B > 1:
             required_frames = _next_grid_frames(B, frame_grid[0], frame_grid[1])
         else:
             required_frames = B
+
+        max_frames = preset.get("max_frames", None)
+        over_max = max_frames is not None and required_frames > max_frames
 
         # ---- frame prepend (reach model temporal grid — video only) ----
         if B > 1 and required_frames > B:
@@ -380,6 +418,13 @@ class VFXPrepareResolution:
         if frame_grid is not None:
             vfx_info.append(f"frames: {B}→{required_frames} (grid {frame_grid[1]}+{frame_grid[0]}n)")
             vfx_info.append(f"length: {required_frames / fps:.3f}s")
+        if over_max:
+            print(
+                f"[VFX] WARNING: required frame count {required_frames} exceeds "
+                f"the model's validated maximum ({max_frames} frames / "
+                f"{max_frames / fps:.1f}s). Output may be unstable."
+            )
+            vfx_info.append(f"WARNING: {required_frames}f > max {max_frames}f")
         return {"ui": {"vfx_info": vfx_info}, "result": result}
 
 

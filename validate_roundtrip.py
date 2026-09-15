@@ -34,6 +34,7 @@ from __init__ import (
     VFXPrepareResolution,
     VFXRestoreResolution,
     VFXFitDimension,
+    _next_grid_frames,
 )
 
 # ---------------------------------------------------------------------------
@@ -573,6 +574,126 @@ def test_vfx_frame_pad() -> int:
 
 
 # ---------------------------------------------------------------------------
+# Test: MiniMax H3 (specs nativas del modelo)
+# ---------------------------------------------------------------------------
+
+def test_minimax_h3() -> int:
+    """Verifica el preset MiniMax H3 contra las specs nativas del modelo.
+
+    Specs (guia oficial):
+    - Canvas nativo: lado corto <= 768, multiplo de 32.
+    - Grid temporal: 5 + 17n frames a 24 fps (rango validado 5..362).
+    """
+    preset = MODEL_PRESETS["MiniMax H3"]
+    prepare = VFXPrepareResolution()
+    restore = VFXRestoreResolution()
+    failures = 0
+
+    print("\n" + "=" * 70)
+    print("TEST: MiniMax H3 (short side <= 768, grid 5+17n)")
+    print("=" * 70)
+
+    # ---- resoluciones: lado corto <= 768 y multiplo 32 ----
+    print("\n  [short side <= 768, multiple 32]")
+    resolutions = [
+        (1344, 768), (768, 1344), (768, 768), (1920, 1080), (3840, 2160),
+        (1024, 1024), (960, 960), (1080, 1080), (900, 900), (800, 800),
+        (1280, 720), (800, 600), (2048, 1152), (4096, 1716),
+    ]
+    for W, H in resolutions:
+        image = _random_image(1, H, W)
+        img_p, _, _, _, sf, _, _, *_ = _r(prepare.prepare(
+            image, "MiniMax H3", "video", "bicubic", "replicate", 1.0, 24, 0.0,
+        ))
+        pW, pH = img_p.shape[2], img_p.shape[1]
+        short = min(pW, pH)
+        mult_ok = (pW % preset["multiple"] == 0 and pH % preset["multiple"] == 0)
+        short_ok = short <= preset["max_short_side"]
+        if mult_ok and short_ok:
+            print(f"  [OK]  {W:>5d}x{H:<5d} -> {pW:>5d}x{pH:<5d}  short={short:<4d} sf={sf:.3f}")
+        else:
+            failures += 1
+            print(f"  [FAIL] {W:>5d}x{H:<5d} -> {pW:>5d}x{pH:<5d}  short={short} "
+                  f"mult={mult_ok} short_ok={short_ok}")
+
+    # ---- grid de frames 5 + 17n ----
+    print("\n  [frame grid 5 + 17n]")
+    canonical = [5, 22, 39, 56, 73, 90, 107, 124, 141, 158, 175, 192, 209,
+                 226, 243, 260, 277, 294, 311, 328, 345, 362]
+    grid_fails = 0
+    for n in canonical:
+        if _next_grid_frames(n, 17, 5) != n:
+            grid_fails += 1
+    for n in (1, 6, 100, 125, 240, 241, 400):
+        req = _next_grid_frames(n, 17, 5)
+        if (req - 5) % 17 != 0 or req < n:
+            grid_fails += 1
+    if grid_fails == 0:
+        print("  [OK]  valores canonicos exactos + alineacion (5+17n)")
+    else:
+        failures += grid_fails
+        print(f"  [FAIL] {grid_fails} fallos de grid")
+
+    # ---- roundtrip video con trim de frames ----
+    print("\n  [roundtrip video: resolution + frames]")
+    for W, H, n in [(1920, 1080, 100), (1280, 720, 124), (1344, 768, 240), (900, 900, 50)]:
+        image = _random_image(n, H, W)
+        out = _r(prepare.prepare(
+            image, "MiniMax H3", "video", "bicubic", "replicate", 1.0, 24, 0.0,
+        ))
+        img_p, msk_p, ow, oh, sf, mw, mh, in_fc, req_fc, _, _, _, length_s = out
+        img_r, _, _, _, _, _, _ = _r(restore.restore(
+            img_p, ow, oh, sf, mw, mh, "lanczos", mask=msk_p, original_frame_count=in_fc,
+        ))
+        res_ok = img_r.shape == (n, H, W, 3)
+        batch_ok = img_p.shape[0] == req_fc
+        len_ok = abs(length_s - req_fc / 24.0) < 1e-6
+        if res_ok and batch_ok and len_ok:
+            print(f"  [OK]  {W}x{H} {n}f -> {req_fc}f -> {img_r.shape[0]}f  len={length_s:.3f}s")
+        else:
+            failures += 1
+            print(f"  [FAIL] {W}x{H} {n}f: res_ok={res_ok} batch_ok={batch_ok} len_ok={len_ok}")
+
+    # ---- single frame: metadata consistente ----
+    print("\n  [single frame consistency]")
+    image = _random_image(1, 512, 512)
+    out = _r(prepare.prepare(
+        image, "MiniMax H3", "video", "bicubic", "replicate", 1.0, 24, 0.0,
+    ))
+    img_p, _, _, _, _, _, _, _, req_fc, _, _, _, length_s = out
+    if img_p.shape[0] == 1 and req_fc == 1 and abs(length_s - 1 / 24.0) < 1e-6:
+        print(f"  [OK]  1f -> batch=1 required=1 len={length_s:.3f}s")
+    else:
+        failures += 1
+        print(f"  [FAIL] 1f: batch={img_p.shape[0]} required={req_fc} len={length_s:.3f}")
+
+    # ---- reference_frame ----
+    print("\n  [reference_frame]")
+    n = 240
+    image = _random_image(n, 1080, 1920)
+    out = _r(prepare.prepare(
+        image, "MiniMax H3", "reference_frame", "bicubic", "replicate", 1.0, 24, 3.0,
+    ))
+    ref_img, _, _, _, _, _, _, _, _, ref_idx, _, _, _ = out
+    rH, rW = ref_img.shape[1], ref_img.shape[2]
+    ref_ok = (
+        ref_img.shape[0] == 1
+        and ref_idx == round(3.0 * 24)
+        and min(rW, rH) <= preset["max_short_side"]
+        and rW % preset["multiple"] == 0
+        and rH % preset["multiple"] == 0
+    )
+    if ref_ok:
+        print(f"  [OK]  t=3.0s -> frame {ref_idx} shape={tuple(ref_img.shape)}")
+    else:
+        failures += 1
+        print(f"  [FAIL] t=3.0s -> frame {ref_idx} shape={tuple(ref_img.shape)}")
+
+    print(f"\n  MiniMax H3: {failures} fallos")
+    return failures
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -617,6 +738,7 @@ def main() -> int:
         total += test_adaptive_restore()
         total += test_fit_dimension()
         total += test_vfx_frame_pad()
+        total += test_minimax_h3()
 
     if run_presets:
         total += test_preset_roundtrip(resolutions)

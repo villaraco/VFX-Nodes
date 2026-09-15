@@ -129,7 +129,7 @@ consiste en darle frames extra al modelo y luego descartarlos.
 | Flux2Klein | 768x768 | 32 |
 | LTX-2.3 | 1024x576 | 32 |
 | LTX-2.3 + ICLORA | 1024x576 | 64 |
-| MiniMax H3 | 1344x768 | 32 |
+| MiniMax H3 | 1344x768 (lado corto ≤768) | 32 |
 | Custom (multiple 64) | sin limite | 64 |
 | SD 1.5 / SDXL | 1024x1024 | 64 |
 | Qwen-Image | 1024x1024 | 16 |
@@ -143,7 +143,7 @@ Algunos modelos de video exigen un numero de frames concreto (grid temporal).
 
 | Preset | Grid de frames | Ejemplo |
 |---|---|---|
-| MiniMax H3 | 5 + 17n (17x k + 5) | 240f -> 243f |
+| MiniMax H3 | 5 + 17n (17x k + 5), rango validado 5-362 | 240f -> 243f |
 | LTX-2.3 | 1 + 8n (8x k + 1) | 50f -> 57f |
 
 ### Modo reference_frame
