@@ -3,10 +3,21 @@ VFX Flux Batch — unit tests
 ============================
 Prueba el parser de markdown y el nodo VFXFluxBatchPrompts.
 No requiere ComfyUI corriendo.
+
+El markdown de prompts vive fuera del repo (proyecto MIOPIA-HELP). La ruta
+se resuelve en este orden:
+
+    python validate_flux_batch.py [ruta.md]     # argumento
+    VFX_FLUX_PROMPTS=<ruta>                     # variable de entorno
+    <ruta por defecto>                          # ver _DEFAULT_PROMPTS
+
+Si el markdown no existe, los tests que dependen de el se marcan como SKIP
+(no fallan) y la suite sale con codigo 0.
 """
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -15,7 +26,16 @@ sys.path.insert(0, str(_HERE))
 
 from flux_batch import VFXFluxBatchPrompts, _parse_flux2_md, DEFAULT_NEGATIVE  # noqa: E402
 
-PROMPTS_FILE = "E:/OpenCode/Proyecto-LAB/MIOPIA-HELP/prompts-flux2-totie.md"
+_DEFAULT_PROMPTS = "E:/OpenCode/Proyecto-LAB/MIOPIA-HELP/Totie/prompts-flux2-totie.md"
+
+
+def _resolve_prompts_file() -> str:
+    if len(sys.argv) > 1:
+        return sys.argv[1]
+    return os.environ.get("VFX_FLUX_PROMPTS", _DEFAULT_PROMPTS)
+
+
+PROMPTS_FILE = _resolve_prompts_file()
 
 
 def test_parser():
@@ -209,17 +229,22 @@ def main():
     print()
 
     failures = 0
-    total = _parse_flux2_md(PROMPTS_FILE)
-    total_count = len(total)
 
-    tests = [
-        ("Parser", test_parser),
-        ("Node output + UI metadata", lambda: test_node_output(total_count)),
-        ("Seed formula", test_seed_formula),
-        ("Empty file", test_empty_file),
-        ("filename_prefix", test_filename_prefix),
-        ("Suffix + anatomy", test_suffix_and_anatomy),
-    ]
+    if Path(PROMPTS_FILE).is_file():
+        total_count = len(_parse_flux2_md(PROMPTS_FILE))
+        tests = [
+            ("Parser", test_parser),
+            ("Node output + UI metadata", lambda: test_node_output(total_count)),
+            ("Seed formula", test_seed_formula),
+            ("Empty file", test_empty_file),
+            ("filename_prefix", test_filename_prefix),
+            ("Suffix + anatomy", test_suffix_and_anatomy),
+        ]
+    else:
+        print(f"  [SKIP] Markdown de prompts no encontrado: {PROMPTS_FILE}")
+        print("         Define VFX_FLUX_PROMPTS o pasa la ruta como argumento.")
+        print()
+        tests = [("Empty file", test_empty_file)]
 
     for name, fn in tests:
         try:
