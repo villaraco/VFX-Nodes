@@ -26,7 +26,14 @@ Original Image  →  [VFXPrepareResolution]  →  AI Model  →  [VFXRestoreReso
 VFX-Nodes/
 ├── __init__.py              Main nodes: VFXPrepareResolution, VFXRestoreResolution, VFXFitDimension, VFXFramePad
 ├── corrections.py           Optional: VFXCorrections (SIFT align + color match + blend)
-├── validate_roundtrip.py    Standalone test suite (no ComfyUI needed)
+├── flux_batch.py            VFXFluxBatchPrompts node + markdown parser
+├── queue_flux_batch.py      CLI to queue all Flux batch prompts via HTTP API
+├── cos/                     COS (Comfy Output Standard) subpackage
+│   ├── __init__.py          COS_NODE_CLASS_MAPPINGS (nodes added in later phases)
+│   └── core.py              Pure logic: naming, skeleton, versioning, sidecar, publish
+├── validate_roundtrip.py    Standalone test suite for VFX nodes (no ComfyUI needed)
+├── validate_flux_batch.py   Standalone test suite for VFXFluxBatchPrompts
+├── validate_cos.py          Standalone test suite for COS core
 ├── requirements.txt         opencv-contrib-python (optional, for corrections node)
 ├── js/
 │   └── vfx_colors.js        ComfyUI UI colors (orange theme for VFX category)
@@ -60,8 +67,10 @@ VFX-Nodes/
 ## How to Test
 
 ```bash
-python validate_roundtrip.py        # All tests
+python validate_roundtrip.py        # VFX nodes (all tests)
 python validate_roundtrip.py --all  # Same
+python validate_flux_batch.py       # Flux batch node
+python validate_cos.py              # COS core (Phase 0)
 ```
 
 CI/CD: exit code 0 = all pass, exit code 1 = failures.
