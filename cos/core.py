@@ -36,6 +36,7 @@ VALID_TASKS = (
 
 ROOT_DIRS = ("PROJECTS", "RND", "ASSETS", "_INBOX", "_TRASH")
 SHOT_SUBDIRS = ("01_INPUT", "02_WORK", "03_PUBLISH")
+PROJECT_MD_NAME = "_PROJECT.md"
 
 SHOW_RE = re.compile(r"^[a-z]{3}$")
 VERSION_RE = re.compile(r"^v(\d{3,})$")
@@ -195,6 +196,135 @@ def list_projects(root: Path | str) -> list[dict]:
             except (OSError, json.JSONDecodeError):
                 continue
     return out
+
+
+# ============================================================================
+# Project assembly (string inputs -> project dict)
+# ============================================================================
+
+def parse_sequences(spec: str) -> list[str]:
+    """``"cine,pant"`` -> ``["cine", "pant"]``."""
+    return [s.strip() for s in (spec or "").split(",") if s.strip()]
+
+
+def parse_variants(spec: str, sequences: list[str]) -> dict[str, list[str]]:
+    """Map sequences to their variants.
+
+    ``";gen,callao,granvia"`` + ``["cine", "pant"]`` -> ``{"cine": [], "pant": ["gen", "callao", "granvia"]}``.
+    Sequences separated by ``;`` (positional); variants of each by ``,``.
+    An empty chunk means "this sequence has no variants".
+    """
+    chunks = (spec or "").split(";")
+    out: dict[str, list[str]] = {}
+    for i, seq in enumerate(sequences):
+        chunk = chunks[i] if i < len(chunks) else ""
+        out[seq] = [v.strip() for v in chunk.split(",") if v.strip()]
+    return out
+
+
+def parse_shots(spec: str) -> dict[str, dict[str, str]]:
+    """Parse ``"cine:0010_cine;pant:0010_boca,0020_oreja"`` -> ``{seq: {id: name}}``."""
+    out: dict[str, dict[str, str]] = {}
+    for chunk in (spec or "").split(";"):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        seq, _, shot_spec = chunk.partition(":")
+        shots: dict[str, str] = {}
+        for item in shot_spec.split(","):
+            item = item.strip()
+            if not item:
+                continue
+            shot_id, _, shot_name = item.partition("_")
+            if shot_id:
+                shots[shot_id.strip()] = shot_name.strip()
+        out[seq.strip()] = shots
+    return out
+
+
+def _deep_merge(base: dict, extra: dict) -> dict:
+    for key, value in extra.items():
+        if isinstance(value, dict) and isinstance(base.get(key), dict):
+            _deep_merge(base[key], value)
+        else:
+            base[key] = value
+    return base
+
+
+def build_project_dict(
+    show: str,
+    project: str,
+    artist: str,
+    fps: int,
+    sequences_spec: str,
+    variants_spec: str = "",
+    shots_spec: str = "",
+    config_extra: str = "",
+    root: str = "",
+    created: str | None = None,
+) -> dict:
+    """Assemble a project dict from the node's string inputs.
+
+    ``config_extra`` (optional) is a JSON object deep-merged into the result,
+    e.g. ``{"sequences": {"pant": {"variants": {"gen": {"resolution": [1920, 1080]}}}}}``.
+    """
+    show = validate_show(show)
+    sequences = parse_sequences(sequences_spec)
+    if not sequences:
+        raise ValueError("No sequences given")
+    variants = parse_variants(variants_spec, sequences)
+    shots = parse_shots(shots_spec)
+    today = _today()
+
+    seq_map: dict[str, dict] = {}
+    for seq in sequences:
+        validate_component(seq, "seq")
+        seq_variants = variants.get(seq, [])
+        seq_shots = shots.get(seq, {})
+        if seq_variants:
+            vmap: dict[str, dict] = {}
+            for v in seq_variants:
+                validate_component(v, "variant")
+                vmap[v] = {}
+            seq_map[seq] = {"variants": vmap, "shots": seq_shots}
+        else:
+            seq_map[seq] = {"resolution": None, "variants": {}, "shots": seq_shots}
+
+    project_dict = {
+        "schema": SCHEMA,
+        "show": show,
+        "project": project,
+        "slug": make_slug(show, project),
+        "root": root,
+        "artist": artist,
+        "fps": fps,
+        "created": created or today,
+        "updated": today,
+        "sequences": seq_map,
+    }
+
+    if config_extra and config_extra.strip():
+        try:
+            extra = json.loads(config_extra)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"config_extra no es JSON valido: {e}") from e
+        if not isinstance(extra, dict):
+            raise ValueError("config_extra debe ser un objeto JSON")
+        _deep_merge(project_dict, extra)
+
+    return project_dict
+
+
+def project_md_path(root: Path | str, slug: str) -> Path:
+    return project_dir(root, slug) / PROJECT_MD_NAME
+
+
+def write_project_md(root: Path | str, project: dict) -> Path:
+    """Write ``_PROJECT.md`` (regenerated from the project dict)."""
+    path = project_md_path(root, project["slug"])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(render_project_md(project), encoding="utf-8")
+    return path
 
 
 # ============================================================================

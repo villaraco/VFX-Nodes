@@ -866,3 +866,17 @@ try:
     NODE_DISPLAY_NAME_MAPPINGS["VFXCorrections"] = "🔶 VFX Corrections (Align+Color+Blend)"
 except ImportError:
     pass
+
+# ------------------------------------------------------------------
+# COS (Comfy Output Standard) subpackage
+# ------------------------------------------------------------------
+try:
+    from .cos import (
+        NODE_CLASS_MAPPINGS as COS_NODE_CLASS_MAPPINGS,
+        NODE_DISPLAY_NAME_MAPPINGS as COS_NODE_DISPLAY_NAME_MAPPINGS,
+    )
+
+    NODE_CLASS_MAPPINGS.update(COS_NODE_CLASS_MAPPINGS)
+    NODE_DISPLAY_NAME_MAPPINGS.update(COS_NODE_DISPLAY_NAME_MAPPINGS)
+except ImportError:
+    pass

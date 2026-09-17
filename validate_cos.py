@@ -294,6 +294,66 @@ def test_render_project_md(c: Checker) -> None:
     c.ok("| pant | granvia | 0030 | despedida | 1440x1080 |" in md, "fila pant/granvia")
 
 
+def test_parse_inputs(c: Checker) -> None:
+    print("\n[test_parse_inputs]")
+    seqs = core.parse_sequences("cine,pant")
+    c.eq(seqs, ["cine", "pant"], "parse_sequences")
+
+    c.eq(
+        core.parse_variants(";gen,callao,granvia", seqs),
+        {"cine": [], "pant": ["gen", "callao", "granvia"]},
+        "parse_variants posicional",
+    )
+    c.eq(
+        core.parse_variants("gen,callao;", seqs),
+        {"cine": ["gen", "callao"], "pant": []},
+        "parse_variants invertido",
+    )
+
+    shots = core.parse_shots("cine:0010_cine;pant:0010_boca,0020_oreja,0030_despedida")
+    c.eq(shots["cine"], {"0010": "cine"}, "parse_shots cine")
+    c.eq(shots["pant"], {"0010": "boca", "0020": "oreja", "0030": "despedida"}, "parse_shots pant")
+
+
+def test_build_project_dict(c: Checker) -> None:
+    print("\n[test_build_project_dict]")
+    p = core.build_project_dict(
+        "tot", "Totie", "mio", 24,
+        "cine,pant", ";gen,callao,granvia",
+        "cine:0010_cine;pant:0010_boca,0020_oreja,0030_despedida",
+        root="E:/COMFY_OUTPUT",
+    )
+    c.eq(p["slug"], "TOT_Totie", "slug generado")
+    c.eq(p["sequences"]["cine"]["variants"], {}, "cine sin variantes")
+    c.eq(list(p["sequences"]["pant"]["variants"].keys()), ["gen", "callao", "granvia"], "pant variantes")
+    c.eq(p["sequences"]["pant"]["shots"]["0010"], "boca", "shot boca")
+    c.eq(p["fps"], 24, "fps")
+    c.eq(p["root"], "E:/COMFY_OUTPUT", "root registrado")
+    c.eq(p["created"], p["updated"], "created == updated al crear")
+
+    p2 = core.build_project_dict(
+        "tot", "Totie", "mio", 24, "pant", "gen", "pant:0010_boca",
+        config_extra='{"sequences": {"pant": {"variants": {"gen": {"resolution": [1920, 1080]}}}}}',
+    )
+    c.eq(p2["sequences"]["pant"]["variants"]["gen"]["resolution"], [1920, 1080], "config_extra fusionado")
+
+    p3 = core.build_project_dict("tot", "Totie", "mio", 24, "cine", "", "cine:0010_cine",
+                                 created="2020-01-01")
+    c.eq(p3["created"], "2020-01-01", "created preservado")
+
+    c.raises(ValueError, lambda: core.build_project_dict("tot", "X", "m", 24, "", ""),
+             "sin secuencias lanza ValueError")
+    c.raises(ValueError, lambda: core.build_project_dict(
+        "tot", "X", "m", 24, "cine", "", "cine:0010_cine", config_extra="{bad json"),
+        "config_extra invalido lanza ValueError")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        core.build_skeleton(tmp, p)
+        md = core.write_project_md(tmp, p)
+        c.ok(md.is_file() and md.name == "_PROJECT.md", "write_project_md crea _PROJECT.md")
+        c.ok("| pant | gen | 0010 | boca |" in md.read_text(encoding="utf-8"), "contenido _PROJECT.md")
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -317,6 +377,8 @@ def main() -> int:
     test_approve_copy(c)
     test_traversal(c)
     test_render_project_md(c)
+    test_parse_inputs(c)
+    test_build_project_dict(c)
 
     print("\n" + "=" * 70)
     if c.failures == 0:

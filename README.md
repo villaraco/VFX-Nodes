@@ -58,11 +58,12 @@ nombres cortos (`<show>_<seq>[_<variant>]_<shot>_<task>_v###`), arbol
 `PROJECTS/<slug>/<seq>/[<variant>]/<shot>/{01_INPUT,02_WORK,03_PUBLISH}`,
 versionado (`_state.json`) y sidecar `_meta.json` con la procedencia completa.
 
-- **Fase 0 (actual):** logica pura en `cos/core.py` — naming, esqueleto,
-  versionado, sidecar, publish (`03_PUBLISH`) y validacion anti-traversal.
-  Sin dependencias (solo stdlib).
-- **Fases 1-5:** nodos `COS Project`, `COS Shot`, `COS Path`, `COS Approve`,
-  dropdowns dinamicos y `js/cos_ui.js`. Ver `docs/Plan - COS Nodes.md`.
+- **Fases 0-1 (actual):** logica pura en `cos/core.py` (naming, esqueleto,
+  versionado, sidecar, publish `03_PUBLISH`, anti-traversal) y el nodo
+  **`COS Project`** (`cos/nodes_project.py`): create/load/refresh del proyecto
+  (esqueleto + `project.json` + `_PROJECT.md`). Root = output dir de ComfyUI.
+- **Fases 2-5:** `COS Shot`, `COS Path`, `COS Approve`, dropdowns dinamicos y
+  `js/cos_ui.js`. Ver `docs/Plan - COS Nodes.md`.
 
 ## Scripts auxiliares
 

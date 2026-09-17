@@ -1,16 +1,35 @@
 """COS (Comfy Output Standard) subpackage for VFX-Nodes.
 
-Phase 0 ships the pure logic in :mod:`cos.core`. The ComfyUI node
-classes (``COS Project``, ``COS Shot``, ``COS Path``, ``COS Approve``)
-are added in later phases and registered here via
-``COS_NODE_CLASS_MAPPINGS``.
+* :mod:`cos.core` holds the pure logic (stdlib only).
+* The ComfyUI node classes live in ``cos/nodes_*.py`` and are registered
+  here via ``COS_NODE_CLASS_MAPPINGS``.
 
-Keep this module importable without ComfyUI (the node layer imports it
-lazily) so ``validate_cos.py`` runs standalone.
+Node registration is guarded so the package stays importable without
+ComfyUI (``validate_cos.py`` runs standalone).
 """
 
 from __future__ import annotations
 
 from . import core
 
-__all__ = ["core"]
+NODE_CLASS_MAPPINGS: dict = {}
+NODE_DISPLAY_NAME_MAPPINGS: dict = {}
+
+try:
+    import folder_paths  # noqa: F401  (present only inside ComfyUI)
+
+    _IN_COMFYUI = True
+except ImportError:
+    _IN_COMFYUI = False
+
+if _IN_COMFYUI:
+    from .nodes_project import COSProject
+
+    NODE_CLASS_MAPPINGS["COSProject"] = COSProject
+    NODE_DISPLAY_NAME_MAPPINGS["COSProject"] = "COS Project"
+
+__all__ = [
+    "core",
+    "NODE_CLASS_MAPPINGS",
+    "NODE_DISPLAY_NAME_MAPPINGS",
+]
