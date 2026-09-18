@@ -1,10 +1,15 @@
-"""COS Project — create / load / refresh a COS project.
+"""COS Project — create / load / refresh the project config.
 
 Thin ComfyUI node layer. It resolves the COS root from ComfyUI's output
 directory and delegates every operation to :mod:`cos.core`.
+
+The config uses the studio's project schema (``<PROJECT>.json``), so COS is
+grammar-compatible with the pipeline even though it is an independent system.
 """
 
 from __future__ import annotations
+
+import os
 
 from . import core
 
@@ -14,27 +19,34 @@ except ImportError:  # standalone / tests
     folder_paths = None
 
 
-def _output_root() -> str:
+def output_root() -> str:
     """COS root = ComfyUI output directory (never write outside it)."""
     if folder_paths is None:
         raise RuntimeError("folder_paths no disponible: ejecuta dentro de ComfyUI")
     return folder_paths.get_output_directory()
 
 
-class COSProject:
-    """Create or load a COS project: root skeleton + ``project.json`` + ``_PROJECT.md``.
+def default_artist() -> str:
+    """Artist folder name (``COS_ARTIST`` > Windows user > ``comfy``)."""
+    return os.environ.get("COS_ARTIST") or os.environ.get("USERNAME") or "comfy"
 
-    * ``create``  -- build from the inputs (idempotent; preserves ``created``).
-    * ``load``    -- read the existing ``project.json`` (falls back to create).
-    * ``refresh`` -- rebuild skeleton + ``_PROJECT.md`` from the inputs.
+
+class COSProject:
+    """Create or load a COS project: ``<PROJECT>.json`` + ``_PROJECT.md`` + tree.
+
+    * ``create``  -- build from the inputs (idempotent).
+    * ``load``    -- read the existing ``<PROJECT>.json`` (falls back to create).
+    * ``refresh`` -- rewrite the config and the tree from the inputs.
+
+    The root is ComfyUI's output directory (``--output-directory``), so the
+    nodes can write straight into the COS tree with a ``filename_prefix``.
     """
 
     DESCRIPTION = (
-        "Crea o carga un proyecto COS. Genera el esqueleto de carpetas "
-        "(PROJECTS/RND/ASSETS/_INBOX/_TRASH y el arbol por secuencia/plano), "
-        "escribe project.json (ficha de maquina) y _PROJECT.md (ficha humana). "
-        "El root es el output directory de ComfyUI. Salida project para los "
-        "demas nodos COS."
+        "Crea o carga un proyecto COS. Escribe <PROJECT>.json (esquema del "
+        "pipeline: fps, formatos, masking, entidades) y _PROJECT.md, y prepara "
+        "el arbol <PROJECT>/<shot|asset>/<ENTIDAD>/{work,version,publish}. "
+        "El root es el output directory de ComfyUI."
     )
 
     @classmethod
@@ -43,18 +55,21 @@ class COSProject:
             "required": {
                 "action": (
                     ["create", "load", "refresh"],
-                    {"default": "create", "tooltip": "create: crea desde los inputs. load: lee el project.json existente. refresh: regenera esqueleto y _PROJECT.md."},
+                    {"default": "create", "tooltip": "create: desde los inputs. load: lee el config existente. refresh: reescribe config y arbol."},
                 ),
-                "show": ("STRING", {"default": "tot", "tooltip": "Codigo de show: 3 letras minusculas (ej. tot)."}),
-                "project": ("STRING", {"default": "Totie", "tooltip": "Nombre legible del proyecto (ej. Totie)."}),
-                "artist": ("STRING", {"default": "mio", "tooltip": "Iniciales del artista (solo para el sidecar)."}),
+                "project": ("STRING", {"default": "TOTIE", "tooltip": "Codigo de proyecto (ej. TOTIE)."}),
                 "fps": ("INT", {"default": 24, "min": 1, "max": 240, "tooltip": "FPS del proyecto."}),
-                "sequences": ("STRING", {"default": "cine,pant", "tooltip": "Secuencias separadas por comas (ej. cine,pant)."}),
-                "variants": ("STRING", {"default": ";gen,callao,granvia", "tooltip": "Variantes por secuencia, separadas por ';' (posicional). Vacio = sin variantes. Ej. ';gen,callao,granvia'."}),
-                "shots": ("STRING", {"default": "cine:0010_cine;pant:0010_boca,0020_oreja,0030_despedida", "tooltip": "Planos por secuencia: seq:id_nombre separados por ','; secuencias por ';'."}),
+                "width": ("INT", {"default": 3840, "min": 1, "max": 16384, "tooltip": "Ancho master."}),
+                "height": ("INT", {"default": 2160, "min": 1, "max": 16384, "tooltip": "Alto master."}),
+                "entities": ("STRING", {"default": "TOTIE_003_0030,TOTIE_003_0010", "multiline": True, "tooltip": "Entidades separadas por comas. Formato <PROJECT>_<SEQ>_<SHOT> (ej. TOTIE_003_0030). Para assets: TOTIE_CHR_Totie:asset"}),
             },
             "optional": {
-                "config_extra": ("STRING", {"default": "", "multiline": True, "tooltip": "JSON opcional con resoluciones/extras. Se fusiona en project.json. Ej. {\"sequences\": {\"pant\": {\"variants\": {\"gen\": {\"resolution\": [1920, 1080]}}}}}"}),
+                "format_name": ("STRING", {"default": "", "tooltip": "Nombre del formato (vacio = el del proyecto)."}),
+                "par": ("FLOAT", {"default": 1.0, "min": 0.1, "max": 10.0, "step": 0.01, "tooltip": "Pixel aspect ratio."}),
+                "ocio": ("STRING", {"default": "", "tooltip": "Ruta al config.ocio (informativo)."}),
+                "handles_in": ("INT", {"default": 8, "min": 0, "max": 1000, "tooltip": "Handles de entrada."}),
+                "handles_out": ("INT", {"default": 8, "min": 0, "max": 1000, "tooltip": "Handles de salida."}),
+                "artist": ("STRING", {"default": "", "tooltip": "Artista por defecto (vacio = usuario de Windows)."}),
             },
         }
 
@@ -67,44 +82,52 @@ class COSProject:
     def run(
         self,
         action: str,
-        show: str,
         project: str,
-        artist: str,
         fps: int,
-        sequences: str,
-        variants: str,
-        shots: str,
-        config_extra: str = "",
+        width: int,
+        height: int,
+        entities: str,
+        format_name: str = "",
+        par: float = 1.0,
+        ocio: str = "",
+        handles_in: int = 8,
+        handles_out: int = 8,
+        artist: str = "",
     ):
-        root = _output_root()
-        slug = core.make_slug(show, project)
-        pjson = core.project_json_path(root, slug)
+        root = output_root()
+        project = core.validate_project(project)
+        cfg_path = core.project_config_path(root, project)
 
-        if action == "load" and pjson.exists():
-            data = core.load_project(pjson)
-            core.build_skeleton(root, data)
-            core.write_project_md(root, data)
+        if action == "load" and cfg_path.exists():
+            config = core.load_project_config(cfg_path)
             action_done = "loaded"
         else:
             if action == "load":
-                print(f"[COS] project.json no encontrado en {pjson}; creando desde los inputs.")
-            created = None
-            if pjson.exists():
-                try:
-                    created = core.load_project(pjson).get("created")
-                except (OSError, ValueError):
-                    created = None
-            data = core.build_project_dict(
-                show, project, artist, fps,
-                sequences, variants, shots,
-                config_extra, root=root, created=created,
+                print(f"[COS] config no encontrado en {cfg_path}; creando desde los inputs.")
+            config = core.build_project_config(
+                project,
+                fps=fps,
+                width=width,
+                height=height,
+                par=par,
+                format_name=format_name,
+                entities=core.parse_entities(entities),
+                root=root,
+                ocio=ocio,
+                handles=(handles_in, handles_out),
             )
-            core.build_skeleton(root, data)
-            core.write_project(root, data)
-            core.write_project_md(root, data)
+            if artist:
+                config["artist"] = artist
+            core.write_project_config(root, config)
             action_done = "created" if action != "refresh" else "refreshed"
 
-        n_seq = len(data.get("sequences", {}))
-        n_shots = sum(len(s.get("shots", {})) for s in data.get("sequences", {}).values())
-        info = f"{action_done}: {slug} @ {root} | {n_seq} seq, {n_shots} planos"
-        return (data, str(pjson), info)
+        core.ensure_project(root, config)
+        core.write_project_md(root, config)
+
+        n_entities = len(config.get("entities") or {})
+        fmt = core.config_format(config)
+        info = (
+            f"{action_done}: {project} @ {root} | {n_entities} entidades | "
+            f"{fmt.get('width')}x{fmt.get('height')} @ {config.get('fps')}fps"
+        )
+        return (config, str(cfg_path), info)

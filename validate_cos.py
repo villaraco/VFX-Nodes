@@ -1,9 +1,10 @@
 """
-COS — Standalone Validator
-==========================
+COS — Standalone Validator (v2)
+===============================
 
-Tests the pure logic of ``cos/core.py`` (Comfy Output Standard) without
-ComfyUI, torch or network access.
+Tests the pure logic of ``cos/core.py`` (Comfy Output Standard, grammar
+compatible with the studio pipeline) without ComfyUI, torch or network access.
+The ComfyUI nodes are smoke-tested with a simulated ``folder_paths`` module.
 
 Uso
 ---
@@ -57,374 +58,24 @@ class Checker:
             print(f"  [FAIL] {msg} (no exception raised)")
 
 
-def sample_project() -> dict:
-    return {
-        "schema": 1,
-        "show": "tot",
-        "project": "Totie",
-        "slug": "TOT_Totie",
-        "root": "E:/COMFY_OUTPUT",
-        "artist": "mio",
-        "fps": 24,
-        "created": "2026-09-10",
-        "updated": "2026-09-10",
-        "sequences": {
-            "cine": {
-                "resolution": [3840, 2160],
-                "variants": {},
-                "shots": {"0010": "cine"},
-            },
-            "pant": {
-                "variants": {
-                    "gen": {"resolution": [1920, 1080], "aspect": "16:9"},
-                    "callao": {"resolution": [1080, 1080], "aspect": "1:1"},
-                    "granvia": {"resolution": [1440, 1080], "aspect": "4:3"},
-                },
-                "shots": {"0010": "boca", "0020": "oreja", "0030": "despedida"},
-            },
+def sample_config() -> dict:
+    return core.build_project_config(
+        "TOTIE",
+        fps=24,
+        width=3840,
+        height=2160,
+        entities={
+            "TOTIE_003_0030": {"entity_type": "shot"},
+            "TOTIE_003_0010": {"entity_type": "shot"},
+            "TOTIE_CHR_Totie": {"entity_type": "asset"},
         },
-    }
-
-
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
-
-def test_slug(c: Checker) -> None:
-    print("\n[test_slug]")
-    c.eq(core.make_slug("tot", "Totie"), "TOT_Totie", "slug simple")
-    c.eq(core.make_slug("mag", "Magerit V2"), "MAG_Magerit_V2", "espacios -> guion bajo")
-    c.raises(ValueError, lambda: core.make_slug("TOOLONG", "X"), "show invalido (no 3 letras)")
-    c.raises(ValueError, lambda: core.make_slug("tot", "  "), "project vacio")
-
-
-def test_build_filename(c: Checker) -> None:
-    print("\n[test_build_filename]")
-    c.eq(
-        core.build_base("tot", "pant", "0010", "i2v", "v001", variant="gen"),
-        "tot_pant_gen_0010_i2v_v001",
-        "base con variante",
+        root="A:/PROJECTS/COS",
     )
-    c.eq(
-        core.build_base("tot", "cine", "0010", "upscale", "v012"),
-        "tot_cine_0010_upscale_v012",
-        "base sin variante",
-    )
-    c.eq(core.build_base("tot", "cine", "0010", "I2V", "v001"), "tot_cine_0010_i2v_v001",
-         "task normalizada a minusculas")
-    c.raises(ValueError, lambda: core.build_base("tot", "cine", "0010", "i2v", "1"),
-             "version sin formato v###")
-    c.raises(ValueError, lambda: core.build_base("tot", "../x", "0010", "i2v", "v001"),
-             "seq con traversal")
-
-
-def test_validate_component(c: Checker) -> None:
-    print("\n[test_validate_component]")
-    c.eq(core.validate_component("0010_boca"), "0010_boca", "componente valido")
-    c.raises(ValueError, lambda: core.validate_component("../etc"), "rechaza '..'")
-    c.raises(ValueError, lambda: core.validate_component("a/b"), "rechaza '/'")
-    c.raises(ValueError, lambda: core.validate_component("C:foo"), "rechaza ':'")
-    c.raises(ValueError, lambda: core.validate_component("bad*"), "rechaza '*'")
-    c.raises(ValueError, lambda: core.validate_component(""), "rechaza vacio")
-
-
-def test_skeleton(c: Checker) -> None:
-    print("\n[test_skeleton]")
-    with tempfile.TemporaryDirectory() as tmp:
-        root = Path(tmp)
-        project = sample_project()
-        core.build_skeleton(root, project)
-
-        for d in core.ROOT_DIRS:
-            c.ok((root / d).is_dir(), f"root dir {d}/")
-
-        pdir = root / "PROJECTS" / "TOT_Totie"
-        c.ok((pdir / "project.json").parent.is_dir() or pdir.is_dir(), "proyecto creado")
-        c.ok((pdir / "_WORKFLOWS").is_dir(), "_WORKFLOWS/")
-
-        cine = pdir / "cine" / "0010_cine"
-        for sub in core.SHOT_SUBDIRS:
-            c.ok((cine / sub).is_dir(), f"cine/0010_cine/{sub}")
-        c.ok((cine / "_NOTES.md").is_file(), "cine/0010_cine/_NOTES.md")
-
-        c.ok((pdir / "pant" / "gen" / "0010_boca" / "02_WORK").is_dir(), "pant/gen/0010_boca/02_WORK")
-        c.ok((pdir / "pant" / "callao" / "0030_despedida" / "03_PUBLISH").is_dir(),
-             "pant/callao/0030_despedida/03_PUBLISH")
-
-        # idempotente
-        before = sorted(str(p) for p in pdir.rglob("*"))
-        core.build_skeleton(root, project)
-        after = sorted(str(p) for p in pdir.rglob("*"))
-        c.ok(after == before, "skeleton idempotente")
-
-
-def test_version_current(c: Checker) -> None:
-    print("\n[test_version_current]")
-    with tempfile.TemporaryDirectory() as tmp:
-        shot = Path(tmp) / "0010_boca"
-        (shot / "02_WORK").mkdir(parents=True)
-
-        c.eq(core.resolve_version(shot, "current"), "v001", "sin estado -> v001")
-        c.ok((shot / "02_WORK" / "v001").is_dir(), "carpeta v001 creada")
-
-        # version existente sin estado -> la toma
-        shot2 = Path(tmp) / "0020_oreja"
-        (shot2 / "02_WORK" / "v003").mkdir(parents=True)
-        c.eq(core.resolve_version(shot2, "current"), "v003", "max(existentes) -> v003")
-
-
-def test_version_new(c: Checker) -> None:
-    print("\n[test_version_new]")
-    with tempfile.TemporaryDirectory() as tmp:
-        shot = Path(tmp) / "0010_boca"
-        (shot / "02_WORK").mkdir(parents=True)
-
-        c.eq(core.resolve_version(shot, "new"), "v001", "primera pasada -> v001")
-        c.eq(core.resolve_version(shot, "new"), "v002", "segunda pasada -> v002")
-        c.eq(core.resolve_version(shot, "current"), "v002", "current tras new -> v002")
-        c.ok((shot / "02_WORK" / "v002").is_dir(), "carpeta v002 creada")
-        c.eq(core.existing_versions(shot), [1, 2], "versiones detectadas [1, 2]")
-
-        state = core.load_state(shot)
-        c.eq(state["current_version"], "v002", "state.current_version = v002")
-        c.eq([h["version"] for h in state["history"]], ["v001", "v002"], "history completa")
-
-
-def test_state_idempotent(c: Checker) -> None:
-    print("\n[test_state_idempotent]")
-    with tempfile.TemporaryDirectory() as tmp:
-        shot = Path(tmp) / "0010_boca"
-        (shot / "02_WORK").mkdir(parents=True)
-
-        v1 = core.resolve_version(shot, "current")
-        v2 = core.resolve_version(shot, "current")
-        c.eq(v1, v2, "current repetido devuelve lo mismo")
-        c.eq(len(core.load_state(shot)["history"]), 1, "history sin duplicados")
-
-        core.register_task(shot, v1, "i2v")
-        core.register_task(shot, v1, "i2v")
-        tasks = core.load_state(shot)["history"][0]["tasks"]
-        c.eq(tasks, ["i2v"], "register_task sin duplicados")
-
-
-def test_sidecar(c: Checker) -> None:
-    print("\n[test_sidecar]")
-    with tempfile.TemporaryDirectory() as tmp:
-        project = sample_project()
-        base = core.build_base("tot", "pant", "0010", "i2v", "v001", variant="gen")
-        meta = core.build_meta(
-            project, "pant", "0010", "boca", "i2v", "v001",
-            model="minimaxh3", seed=87654321, resolution=[1080, 1080], fps=24,
-            variant="gen", workflow={"nodes": []}, prompt={"1": {}},
-        )
-        path = core.write_meta(tmp, base, meta)
-        c.eq(path.name, "tot_pant_gen_0010_i2v_v001_meta.json", "nombre del sidecar")
-
-        data = json.loads(path.read_text(encoding="utf-8"))
-        keys = list(data.keys())
-        c.eq(keys[0], "schema", "primer campo = schema")
-        c.eq(keys[-1], "prompt", "ultimo campo = prompt")
-        c.eq(data["seed"], 87654321, "seed persistida")
-        c.eq(data["model"], "minimaxh3", "modelo persistido")
-        c.eq(data["resolution"], [1080, 1080], "resolucion persistida")
-        c.eq(data["shot_name"], "boca", "shot_name persistido")
-        c.eq(data["workflow"], {"nodes": []}, "workflow persistido")
-
-
-def test_project_json_roundtrip(c: Checker) -> None:
-    print("\n[test_project_json_roundtrip]")
-    with tempfile.TemporaryDirectory() as tmp:
-        root = Path(tmp)
-        project = sample_project()
-        path = core.write_project(root, project)
-        c.ok(path.is_file(), "project.json escrito")
-
-        loaded = core.load_project(path)
-        c.eq(loaded["slug"], "TOT_Totie", "slug conservado")
-        c.eq(loaded["sequences"]["pant"]["shots"]["0010"], "boca", "shots conservados")
-        c.eq(loaded["updated"], core._today(), "updated refrescado")
-
-        projects = core.list_projects(root)
-        c.eq(len(projects), 1, "list_projects encuentra 1")
-
-
-def test_approve_copy(c: Checker) -> None:
-    print("\n[test_approve_copy]")
-    with tempfile.TemporaryDirectory() as tmp:
-        shot = Path(tmp) / "0010_boca"
-        vdir = shot / "02_WORK" / "v001"
-        vdir.mkdir(parents=True)
-
-        (vdir / "tot_pant_gen_0010_i2v_v001_00001_.mp4").write_text("render-i2v")
-        (vdir / "tot_pant_gen_0010_i2v_v001_meta.json").write_text("{}")
-        (vdir / "tot_pant_gen_0010_i2i_v001_00001_.png").write_text("render-i2i")
-
-        copied = core.approve_copy(shot, "i2v", "v001")
-        names = sorted(p.name for p in copied)
-        c.eq(
-            names,
-            ["tot_pant_gen_0010_i2v_v001_00001_.mp4", "tot_pant_gen_0010_i2v_v001_meta.json"],
-            "copia solo los archivos de la task i2v",
-        )
-        c.ok((shot / "03_PUBLISH" / "tot_pant_gen_0010_i2v_v001_00001_.mp4").is_file(),
-             "render publicado")
-        c.ok((vdir / "tot_pant_gen_0010_i2v_v001_00001_.mp4").is_file(),
-             "original permanece (copy, no move)")
-        c.ok(not (shot / "03_PUBLISH" / "tot_pant_gen_0010_i2i_v001_00001_.png").exists(),
-             "no publica otras tasks")
-
-        c.raises(FileNotFoundError, lambda: core.approve_copy(shot, "i2v", "v009"),
-                 "version inexistente lanza FileNotFoundError")
-
-
-def test_traversal(c: Checker) -> None:
-    print("\n[test_traversal]")
-    with tempfile.TemporaryDirectory() as tmp:
-        root = Path(tmp)
-        core.ensure_root(root)
-        c.ok(core.is_within(root, root / "PROJECTS" / "TOT_Totie"), "ruta interna OK")
-        c.ok(not core.is_within(root, root / ".." / "evil"), "ruta externa rechazada")
-        c.ok(not core.is_within(root, Path(tmp).parent), "padre rechazado")
-
-
-def test_render_project_md(c: Checker) -> None:
-    print("\n[test_render_project_md]")
-    md = core.render_project_md(sample_project())
-    c.ok("| cine | - | 0010 | cine | 3840x2160 |" in md, "fila cine")
-    c.ok("| pant | gen | 0010 | boca | 1920x1080 |" in md, "fila pant/gen")
-    c.ok("| pant | granvia | 0030 | despedida | 1440x1080 |" in md, "fila pant/granvia")
-
-
-def test_parse_inputs(c: Checker) -> None:
-    print("\n[test_parse_inputs]")
-    seqs = core.parse_sequences("cine,pant")
-    c.eq(seqs, ["cine", "pant"], "parse_sequences")
-
-    c.eq(
-        core.parse_variants(";gen,callao,granvia", seqs),
-        {"cine": [], "pant": ["gen", "callao", "granvia"]},
-        "parse_variants posicional",
-    )
-    c.eq(
-        core.parse_variants("gen,callao;", seqs),
-        {"cine": ["gen", "callao"], "pant": []},
-        "parse_variants invertido",
-    )
-
-    shots = core.parse_shots("cine:0010_cine;pant:0010_boca,0020_oreja,0030_despedida")
-    c.eq(shots["cine"], {"0010": "cine"}, "parse_shots cine")
-    c.eq(shots["pant"], {"0010": "boca", "0020": "oreja", "0030": "despedida"}, "parse_shots pant")
-
-
-def test_build_project_dict(c: Checker) -> None:
-    print("\n[test_build_project_dict]")
-    p = core.build_project_dict(
-        "tot", "Totie", "mio", 24,
-        "cine,pant", ";gen,callao,granvia",
-        "cine:0010_cine;pant:0010_boca,0020_oreja,0030_despedida",
-        root="E:/COMFY_OUTPUT",
-    )
-    c.eq(p["slug"], "TOT_Totie", "slug generado")
-    c.eq(p["sequences"]["cine"]["variants"], {}, "cine sin variantes")
-    c.eq(list(p["sequences"]["pant"]["variants"].keys()), ["gen", "callao", "granvia"], "pant variantes")
-    c.eq(p["sequences"]["pant"]["shots"]["0010"], "boca", "shot boca")
-    c.eq(p["fps"], 24, "fps")
-    c.eq(p["root"], "E:/COMFY_OUTPUT", "root registrado")
-    c.eq(p["created"], p["updated"], "created == updated al crear")
-
-    p2 = core.build_project_dict(
-        "tot", "Totie", "mio", 24, "pant", "gen", "pant:0010_boca",
-        config_extra='{"sequences": {"pant": {"variants": {"gen": {"resolution": [1920, 1080]}}}}}',
-    )
-    c.eq(p2["sequences"]["pant"]["variants"]["gen"]["resolution"], [1920, 1080], "config_extra fusionado")
-
-    p3 = core.build_project_dict("tot", "Totie", "mio", 24, "cine", "", "cine:0010_cine",
-                                 created="2020-01-01")
-    c.eq(p3["created"], "2020-01-01", "created preservado")
-
-    c.raises(ValueError, lambda: core.build_project_dict("tot", "X", "m", 24, "", ""),
-             "sin secuencias lanza ValueError")
-    c.raises(ValueError, lambda: core.build_project_dict(
-        "tot", "X", "m", 24, "cine", "", "cine:0010_cine", config_extra="{bad json"),
-        "config_extra invalido lanza ValueError")
-
-    with tempfile.TemporaryDirectory() as tmp:
-        core.build_skeleton(tmp, p)
-        md = core.write_project_md(tmp, p)
-        c.ok(md.is_file() and md.name == "_PROJECT.md", "write_project_md crea _PROJECT.md")
-        c.ok("| pant | gen | 0010 | boca |" in md.read_text(encoding="utf-8"), "contenido _PROJECT.md")
-
-
-def test_resolve_shot_dir(c: Checker) -> None:
-    print("\n[test_resolve_shot_dir]")
-    project = sample_project()
-    root = Path("E:/COMFY_OUTPUT")
-
-    cine = core.resolve_shot_dir(root, project, "cine", "0010")
-    c.eq(cine.name, "0010_cine", "plano cine sin variante")
-    c.ok(cine.parent.name == "cine", "cine cuelga de la secuencia")
-
-    boca = core.resolve_shot_dir(root, project, "pant", "0010", variant="gen")
-    c.eq(boca.as_posix(), "E:/COMFY_OUTPUT/PROJECTS/TOT_Totie/pant/gen/0010_boca",
-         "plano pant/gen con variante")
-
-    unknown = core.resolve_shot_dir(root, project, "pant", "9999", variant="gen")
-    c.eq(unknown.name, "9999_9999", "shot desconocido usa el id como nombre")
-
-    c.raises(ValueError, lambda: core.resolve_shot_dir(root, project, "../x", "0010"),
-             "seq con traversal")
-
-
-def test_resolve_resolution(c: Checker) -> None:
-    print("\n[test_resolve_resolution]")
-    project = sample_project()
-    c.eq(core.resolve_resolution(project, "cine"), [3840, 2160], "cine -> resolucion de secuencia")
-    c.eq(core.resolve_resolution(project, "pant", "gen"), [1920, 1080], "pant/gen -> de la variante")
-    c.eq(core.resolve_resolution(project, "pant", "callao"), [1080, 1080], "pant/callao -> de la variante")
-    c.eq(core.resolve_resolution(project, "nope"), None, "secuencia inexistente -> None")
-
-
-def test_build_output(c: Checker) -> None:
-    print("\n[test_build_output]")
-    with tempfile.TemporaryDirectory() as tmp:
-        root = Path(tmp)
-        project = sample_project()
-        out = core.build_output(root, project, "pant", "0010", "i2v", "v001", variant="gen")
-
-        c.eq(out["base"], "tot_pant_gen_0010_i2v_v001", "base corta")
-        c.eq(
-            out["prefix"],
-            "PROJECTS/TOT_Totie/pant/gen/0010_boca/02_WORK/v001/tot_pant_gen_0010_i2v_v001",
-            "prefijo relativo con barras normales",
-        )
-        c.ok(out["out_dir"].is_absolute(), "out_dir absoluto")
-        c.ok(core.is_within(root, out["out_dir"]), "out_dir dentro del root")
-        c.ok("\\" not in out["prefix"], "prefijo sin backslashes (ComfyUI)")
-
-        cine = core.build_output(root, project, "cine", "0010", "upscale", "v012")
-        c.eq(
-            cine["prefix"],
-            "PROJECTS/TOT_Totie/cine/0010_cine/02_WORK/v012/tot_cine_0010_upscale_v012",
-            "prefijo sin variante",
-        )
-
-        c.raises(ValueError, lambda: core.build_output(root, project, "cine", "0010", "i2v", "1"),
-                 "version invalida")
-
-
-def test_ensure_shot_dirs(c: Checker) -> None:
-    print("\n[test_ensure_shot_dirs]")
-    with tempfile.TemporaryDirectory() as tmp:
-        shot = Path(tmp) / "0010_boca"
-        core.ensure_shot_dirs(shot)
-        for sub in core.SHOT_SUBDIRS:
-            c.ok((shot / sub).is_dir(), f"ensure_shot_dirs crea {sub}")
-        c.ok((shot / "_NOTES.md").is_file(), "ensure_shot_dirs crea _NOTES.md")
 
 
 @contextmanager
 def fake_comfy(output_dir):
-    """Import ``cos.nodes_path`` with a simulated ``folder_paths`` module."""
+    """Import the COS nodes with a simulated ``folder_paths`` module."""
     import importlib
     import types
 
@@ -433,10 +84,18 @@ def fake_comfy(output_dir):
     previous = sys.modules.get("folder_paths")
     sys.modules["folder_paths"] = fake
     try:
+        import cos.nodes_project as nodes_project
         import cos.nodes_path as nodes_path
 
+        importlib.reload(nodes_project)
         importlib.reload(nodes_path)
-        yield nodes_path
+        yield types.SimpleNamespace(
+            project=nodes_project, path=nodes_path,
+            COSProject=nodes_project.COSProject,
+            COSShot=nodes_path.COSShot,
+            COSPath=nodes_path.COSPath,
+            COSApprove=nodes_path.COSApprove,
+        )
     finally:
         if previous is None:
             sys.modules.pop("folder_paths", None)
@@ -444,190 +103,495 @@ def fake_comfy(output_dir):
             sys.modules["folder_paths"] = previous
 
 
-def test_cos_path_node(c: Checker) -> None:
-    print("\n[test_cos_path_node]  (smoke, folder_paths simulado)")
+# ---------------------------------------------------------------------------
+# Grammar
+# ---------------------------------------------------------------------------
+
+def test_versions(c: Checker) -> None:
+    print("\n[test_versions]")
+    c.eq(core.format_version(1), "v0001", "1 -> v0001 (4 digitos)")
+    c.eq(core.format_version(25), "v0025", "25 -> v0025")
+    c.eq(core.format_version(1234), "v1234", "1234 -> v1234")
+    c.eq(core.parse_version("v0025"), 25, "v0025 -> 25")
+    c.eq(core.parse_version("v0001"), 1, "v0001 -> 1")
+    c.raises(ValueError, lambda: core.format_version(0), "version 0 invalida")
+    c.raises(ValueError, lambda: core.parse_version("1"), "sin formato v####")
+    c.raises(ValueError, lambda: core.parse_version("v1"), "v1 no es v####")
+
+
+def test_validation(c: Checker) -> None:
+    print("\n[test_validation]")
+    c.eq(core.validate_project("TOTIE"), "TOTIE", "project valido")
+    c.raises(ValueError, lambda: core.validate_project("TOT-IE"), "project con guion")
+    c.raises(ValueError, lambda: core.validate_project(""), "project vacio")
+
+    c.eq(core.validate_token("0030", "shot"), "0030", "token valido")
+    c.raises(ValueError, lambda: core.validate_token("../etc", "shot"), "rechaza '..'")
+    c.raises(ValueError, lambda: core.validate_token("a/b", "shot"), "rechaza '/'")
+    c.raises(ValueError, lambda: core.validate_token("C:foo", "shot"), "rechaza ':'")
+    c.raises(ValueError, lambda: core.validate_token("bad*", "shot"), "rechaza '*'")
+
+    c.eq(core.normalize_task("I2V"), "i2v", "task a minusculas")
+    c.eq(core.normalize_task("inpaint mask"), "inpaint_mask", "task con espacio")
+    c.eq(core.normalize_description("Callao"), "Callao", "description valida")
+    c.eq(core.normalize_description("  "), None, "description vacia -> None")
+    c.eq(core.normalize_description(None), None, "description None -> None")
+
+    c.eq(core.validate_artist("Ivan Cadenas"), "Ivan Cadenas", "artista con espacio")
+    c.raises(ValueError, lambda: core.validate_artist("../x"), "artista con traversal")
+    c.raises(ValueError, lambda: core.validate_artist(""), "artista vacio")
+
+
+def test_grammar(c: Checker) -> None:
+    print("\n[test_grammar]")
+    c.eq(core.build_entity("TOTIE", "003", "0030"), "TOTIE_003_0030", "entity")
+    c.eq(core.build_entity("TOTIE", "DZN", "0010"), "TOTIE_DZN_0010", "entity con secuencia alfanumerica")
+
+    tokens = core.split_entity("TOTIE_003_0030")
+    c.eq(tokens["project"], "TOTIE", "split project")
+    c.eq(tokens["sequence"], "003", "split sequence")
+    c.eq(tokens["shot"], "0030", "split shot")
+    c.eq(core.split_entity("TOTIE_DZN_0010")["sequence"], "DZN", "split DZN")
+    c.raises(ValueError, lambda: core.split_entity("TOTIE"), "entity incompleta")
+
+    c.eq(core.build_group("TOTIE_003_0030", "i2v"), "TOTIE_003_0030_i2v", "group sin description")
+    c.eq(
+        core.build_group("TOTIE_003_0030", "i2v", "callao"),
+        "TOTIE_003_0030_i2v_callao",
+        "group con description",
+    )
+    c.eq(
+        core.build_version_name("TOTIE_003_0030", "i2v", "v0001", "callao"),
+        "TOTIE_003_0030_i2v_callao_v0001",
+        "version name",
+    )
+    c.eq(
+        core.build_version_name("TOTIE_003_0030", "upscale", "v0012"),
+        "TOTIE_003_0030_upscale_v0012",
+        "version name sin description",
+    )
+    c.raises(
+        ValueError,
+        lambda: core.build_version_name("TOTIE_003_0030", "i2v", "1"),
+        "version sin formato v####",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Config + paths
+# ---------------------------------------------------------------------------
+
+def test_project_config(c: Checker) -> None:
+    print("\n[test_project_config]")
+    config = sample_config()
+    c.eq(config["name"], "TOTIE", "name")
+    c.eq(config["fps"], 24, "fps")
+    c.eq(config["formats"][0]["width"], 3840, "width del formato")
+    c.eq(config["masking_ratio"], {"name": "TOTIE", "width": 16, "height": 9}, "masking 16:9")
+    c.eq(config["default_handles_in"], 8, "handles in")
+    c.eq(config["directory"]["windows"], "A:/PROJECTS/COS/TOTIE", "directory")
+    c.eq(list(config["entities"]), ["TOTIE_003_0030", "TOTIE_003_0010", "TOTIE_CHR_Totie"], "entidades")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = core.write_project_config(tmp, config)
+        c.ok(path.name == "TOTIE.json", "config escrito como <PROJECT>.json")
+        loaded = core.load_project_config(path)
+        c.eq(loaded["name"], "TOTIE", "roundtrip name")
+        c.eq(len(core.list_projects(tmp)), 1, "list_projects encuentra 1")
+
+        md = core.write_project_md(tmp, config)
+        text = md.read_text(encoding="utf-8")
+        c.ok("| TOTIE_003_0030 | shot | 003 | 0030 |" in text, "_PROJECT.md con la entidad")
+
+    c.eq(core.parse_entities("TOTIE_003_0030, TOTIE_DZN_0010"), {
+        "TOTIE_003_0030": {"entity_type": "shot"},
+        "TOTIE_DZN_0010": {"entity_type": "shot"},
+    }, "parse_entities")
+    c.eq(
+        core.parse_entities("TOTIE_CHR_Totie:asset")["TOTIE_CHR_Totie"]["entity_type"],
+        "asset",
+        "parse_entities con tipo",
+    )
+    c.raises(ValueError, lambda: core.parse_entities("TOTIE"), "entity incompleta")
+    c.raises(ValueError, lambda: core.parse_entities("TOTIE_003_0030:nope"), "tipo invalido")
+
+
+def test_paths(c: Checker) -> None:
+    print("\n[test_paths]")
+    root = Path("A:/PROJECTS/COS")
+    c.eq(
+        core.entity_dir(root, "TOTIE", "shot", "TOTIE_003_0030").as_posix(),
+        "A:/PROJECTS/COS/TOTIE/shot/TOTIE_003_0030",
+        "entity_dir",
+    )
+    c.eq(
+        core.work_dir(root, "TOTIE", "shot", "TOTIE_003_0030", "i2v", "Ivan Cadenas").as_posix(),
+        "A:/PROJECTS/COS/TOTIE/shot/TOTIE_003_0030/work/i2v/Ivan Cadenas",
+        "work_dir con artista",
+    )
+    c.eq(
+        core.version_task_dir(root, "TOTIE", "shot", "TOTIE_003_0030", "i2v").as_posix(),
+        "A:/PROJECTS/COS/TOTIE/shot/TOTIE_003_0030/version/i2v",
+        "version_task_dir",
+    )
+    vpath = core.version_dir(
+        root, "TOTIE", "shot", "TOTIE_003_0030", "i2v", "TOTIE_003_0030_i2v_v0001"
+    )
+    c.eq(
+        vpath.as_posix(),
+        "A:/PROJECTS/COS/TOTIE/shot/TOTIE_003_0030/version/i2v/TOTIE_003_0030_i2v_v0001",
+        "version_dir",
+    )
+    c.eq(core.pack_dir(vpath, "exr").as_posix(), f"{vpath.as_posix()}/_exr", "pack_dir")
+    c.eq(core.source_dir(vpath).name, "_source", "source_dir")
+    c.eq(
+        core.publish_task_dir(root, "TOTIE", "shot", "TOTIE_003_0030", "i2v").as_posix(),
+        "A:/PROJECTS/COS/TOTIE/shot/TOTIE_003_0030/publish/i2v",
+        "publish_task_dir",
+    )
+    c.raises(ValueError, lambda: core.pack_dir(vpath, "nope"), "pack desconocido")
+    c.raises(ValueError, lambda: core.entity_dir(root, "TOTIE", "nope", "X_Y_Z"), "entity_type invalido")
+
+
+def test_skeleton(c: Checker) -> None:
+    print("\n[test_skeleton]")
+    with tempfile.TemporaryDirectory() as tmp:
+        config = sample_config()
+        core.ensure_project(tmp, config)
+        pdir = Path(tmp) / "TOTIE"
+        c.ok(pdir.is_dir(), "carpeta del proyecto")
+        for sub in ("work", "version", "publish"):
+            c.ok((pdir / "shot" / "TOTIE_003_0030" / sub).is_dir(), f"shot/TOTIE_003_0030/{sub}")
+        c.ok((pdir / "asset" / "TOTIE_CHR_Totie" / "version").is_dir(), "asset/TOTIE_CHR_Totie/version")
+
+        before = sorted(str(p) for p in pdir.rglob("*"))
+        core.ensure_project(tmp, config)
+        after = sorted(str(p) for p in pdir.rglob("*"))
+        c.ok(after == before, "ensure_project idempotente")
+
+        core.ensure_entity(tmp, "TOTIE", "shot", "TOTIE_999_9999")
+        c.ok((pdir / "shot" / "TOTIE_999_9999" / "work").is_dir(), "ensure_entity crea el arbol")
+
+
+def test_versions_resolution(c: Checker) -> None:
+    print("\n[test_versions_resolution]")
+    with tempfile.TemporaryDirectory() as tmp:
+        vtask = Path(tmp) / "version" / "i2v"
+        vtask.mkdir(parents=True)
+        c.eq(core.existing_versions(vtask), [], "sin versiones")
+        c.eq(core.current_version(vtask), None, "current_version sin nada -> None")
+
+        (vtask / "TOTIE_003_0030_i2v_v0001").mkdir()
+        (vtask / "TOTIE_003_0030_i2v_v0002").mkdir()
+        c.eq(core.existing_versions(vtask), [1, 2], "detecta v0001 y v0002")
+        c.eq(core.current_version(vtask), "v0002", "current = la mas alta")
+        c.ok(not (vtask / "TOTIE_003_0030_i2v_v0003").exists(), "current no crea nada")
+
+        c.eq(core.resolve_version(vtask, "new"), "v0003", "new = max + 1")
+        c.eq(core.resolve_version(vtask, "current"), "v0002", "current")
+        c.raises(ValueError, lambda: core.resolve_version(vtask, "nope"), "modo invalido")
+
+        empty = Path(tmp) / "version" / "upscale"
+        empty.mkdir(parents=True)
+        c.eq(core.resolve_version(empty, "current"), "v0001", "current sin versiones -> v0001")
+
+
+def test_build_output(c: Checker) -> None:
+    print("\n[test_build_output]")
+    with tempfile.TemporaryDirectory() as tmp:
+        config = sample_config()
+        out = core.build_output(tmp, config, "TOTIE_003_0030", "i2v", "v0001", "callao")
+        c.eq(out["version_name"], "TOTIE_003_0030_i2v_callao_v0001", "version_name")
+        c.eq(out["group"], "TOTIE_003_0030_i2v_callao", "group")
+        c.eq(
+            out["prefixes"]["png"],
+            "TOTIE/shot/TOTIE_003_0030/version/i2v/TOTIE_003_0030_i2v_callao_v0001/_png/"
+            "TOTIE_003_0030_i2v_callao_v0001",
+            "prefijo png",
+        )
+        c.eq(
+            out["prefixes"]["mov"],
+            "TOTIE/shot/TOTIE_003_0030/version/i2v/TOTIE_003_0030_i2v_callao_v0001/_mov/"
+            "TOTIE_003_0030_i2v_callao_v0001",
+            "prefijo mov",
+        )
+        c.ok("\\" not in out["prefixes"]["exr"], "prefijo con barras normales (ComfyUI)")
+        c.ok(core.is_within(tmp, out["version_path"]), "version dentro del root")
+
+        asset = core.build_output(tmp, config, "TOTIE_CHR_Totie", "t2i", "v0001", entity_type="asset")
+        c.eq(
+            asset["prefixes"]["exr"],
+            "TOTIE/asset/TOTIE_CHR_Totie/version/t2i/TOTIE_CHR_Totie_t2i_v0001/_exr/"
+            "TOTIE_CHR_Totie_t2i_v0001",
+            "prefijo de asset",
+        )
+        c.raises(
+            ValueError,
+            lambda: core.build_output(tmp, config, "TOTIE_003_0030", "i2v", "1"),
+            "version invalida",
+        )
+
+
+# ---------------------------------------------------------------------------
+# Sidecars
+# ---------------------------------------------------------------------------
+
+def test_version_meta(c: Checker) -> None:
+    print("\n[test_version_meta]")
+    config = sample_config()
+    meta = core.build_version_meta(
+        config, "TOTIE_003_0030", "i2v", "v0025",
+        entity_type="shot", description="callao", user="Mike",
+        dependencies=["TOTIE_003_0030_i2i_gen_v0001"],
+        comfy={"model": "minimaxh3", "seed": 87654321, "resolution": [3840, 2160]},
+        date="2026/09/18 13:44:00",
+    )
+    keys = list(meta.keys())
+    for key in ("date", "dependencies", "description", "entity", "entity_type",
+                "episode", "group", "name", "project", "scene", "sequence",
+                "task", "user", "version"):
+        c.ok(key in meta, f"clave del pipeline: {key}")
+    c.eq(keys[-1], "comfy", "el bloque comfy va al final")
+    c.eq(meta["entity"], "TOTIE_003_0030", "entity")
+    c.eq(meta["entity_type"], "shot", "entity_type")
+    c.eq(meta["sequence"], "003", "sequence")
+    c.eq(meta["scene"], "", "scene vacio")
+    c.eq(meta["episode"], "", "episode vacio")
+    c.eq(meta["group"], "TOTIE_003_0030_i2v_callao", "group")
+    c.eq(meta["name"], "TOTIE_003_0030_i2v_callao_v0025", "name")
+    c.eq(meta["version"], 25, "version como int")
+    c.eq(meta["description"], "callao", "description")
+    c.eq(meta["dependencies"], ["TOTIE_003_0030_i2i_gen_v0001"], "dependencies")
+    c.eq(meta["comfy"]["seed"], 87654321, "bloque comfy")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = core.write_version_meta(tmp, meta["name"], meta)
+        c.ok(path.name == "TOTIE_003_0030_i2v_callao_v0025.json", "nombre del sidecar de version")
+        c.eq(json.loads(path.read_text(encoding="utf-8"))["version"], 25, "sidecar releible")
+
+        src = core.write_source_copy(tmp, meta["name"], {"nodes": []})
+        c.eq(src.parent.name, "_source", "_source creado")
+        c.ok(src.is_file(), "workflow copiado a _source")
+        c.eq(core.write_source_copy(tmp, meta["name"], None), None, "sin workflow no escribe _source")
+
+
+def test_output_meta(c: Checker) -> None:
+    print("\n[test_output_meta]")
+    config = sample_config()
+    meta = core.build_output_meta("exr", "TOTIE_003_0030_i2v_v0001", config)
+    c.eq(meta["name"], "exr", "nombre del pack")
+    c.eq(meta["single"], False, "single")
+    c.eq(meta["source"], "TOTIE_003_0030_i2v_v0001.json", "source")
+    attrs = meta["attributes"]
+    c.eq(attrs["ext"], "exr", "ext")
+    c.eq(attrs["width"], 3840, "width del config")
+    c.eq(attrs["height"], 2160, "height del config")
+    c.eq(attrs["colorspace"], "ACES - ACEScg", "colorspace exr")
+    c.eq(attrs["bit_depth"], 32, "bit depth exr")
+    c.eq(attrs["software"], "comfyui", "software")
+    c.ok("rgba.red" in attrs["channels"], "canales exr")
+
+    mov = core.build_output_meta("mov", "V", config)["attributes"]
+    c.eq(mov["codec"], "hevc", "codec del mov")
+    c.eq(mov["ext"], "mp4", "ext del mov")
+    c.raises(ValueError, lambda: core.build_output_meta("nope", "V", config), "pack desconocido")
+
+
+def test_output_sidecars(c: Checker) -> None:
+    print("\n[test_output_sidecars]")
+    with tempfile.TemporaryDirectory() as tmp:
+        config = sample_config()
+        vpath = Path(tmp) / "TOTIE_003_0030_i2v_v0001"
+        name = "TOTIE_003_0030_i2v_v0001"
+        (vpath / "_png").mkdir(parents=True)
+        (vpath / "_mov").mkdir()
+        (vpath / "_png" / f"{name}_00001_.png").write_text("png")
+        (vpath / "_mov" / f"{name}_00001_.mp4").write_text("mp4")
+
+        written = core.write_output_sidecars(vpath, name, config)
+        names = sorted(p.name for p in written)
+        c.eq(names, ["_mov.json", "_png.json"], "solo escribe sidecars de packs existentes")
+        c.ok((vpath / "_png" / "_png.json").is_file(), "_png.json creado")
+        c.ok(not (vpath / "_exr" / "_exr.json").exists(), "no inventa el pack exr")
+        data = json.loads((vpath / "_mov" / "_mov.json").read_text(encoding="utf-8"))
+        c.eq(data["attributes"]["codec"], "hevc", "atributos del mov")
+
+
+def test_publish_version(c: Checker) -> None:
+    print("\n[test_publish_version]")
+    with tempfile.TemporaryDirectory() as tmp:
+        vpath = Path(tmp) / "TOTIE_003_0030_i2v_v0001"
+        (vpath / "_png").mkdir(parents=True)
+        (vpath / "TOTIE_003_0030_i2v_v0001.json").write_text("{}")
+        (vpath / "_png" / "TOTIE_003_0030_i2v_v0001_00001_.png").write_text("render")
+
+        dest = Path(tmp) / "publish" / "i2v" / "TOTIE_003_0030_i2v_v0001"
+        copied = core.publish_version(vpath, dest)
+        c.eq(sorted(p.name for p in copied), ["TOTIE_003_0030_i2v_v0001.json", "_png"], "copia sidecar + pack")
+        c.ok((dest / "_png" / "TOTIE_003_0030_i2v_v0001_00001_.png").is_file(), "render publicado")
+        c.ok((vpath / "_png" / "TOTIE_003_0030_i2v_v0001_00001_.png").is_file(),
+             "el original permanece (copy, no move)")
+        c.raises(FileNotFoundError, lambda: core.publish_version(Path(tmp) / "nope", dest),
+                 "version inexistente")
+
+
+def test_dependencies_and_traversal(c: Checker) -> None:
+    print("\n[test_dependencies_and_traversal]")
+    c.eq(
+        core.parse_dependencies("A_v0001, B_v0002\nC_v0003; D_v0004"),
+        ["A_v0001", "B_v0002", "C_v0003", "D_v0004"],
+        "parse_dependencies",
+    )
+    c.eq(core.parse_dependencies(""), [], "dependencies vacias")
+    c.eq(core.parse_dependencies("   ,  "), [], "solo separadores")
+
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
-        project = sample_project()
-        core.build_skeleton(root, project)
-        core.write_project(root, project)
-
-        with fake_comfy(root) as nodes_path:
-            node = nodes_path.COSPath()
-            out = node.run(
-                project, "pant", "0010", "i2v", "new",
-                variant="gen", model="minimaxh3", seed=1234,
-                prompt={"1": {"class_type": "KSampler"}},
-                extra_pnginfo={"workflow": {"nodes": []}},
-            )
-
-        exr, video, png, version, out_dir, info = out
-        c.eq(
-            exr,
-            "PROJECTS/TOT_Totie/pant/gen/0010_boca/02_WORK/v001/tot_pant_gen_0010_i2v_v001",
-            "prefijo EXR",
-        )
-        c.eq(video, exr, "video_prefix = exr_prefix")
-        c.eq(png, exr, "png_prefix = exr_prefix")
-        c.eq(version, "v001", "version nueva")
-        c.ok(Path(out_dir).is_dir(), "carpeta de salida creada")
-
-        meta_file = Path(out_dir) / "tot_pant_gen_0010_i2v_v001_meta.json"
-        c.ok(meta_file.is_file(), "sidecar escrito")
-        meta = json.loads(meta_file.read_text(encoding="utf-8"))
-        c.eq(meta["seed"], 1234, "seed en el sidecar")
-        c.eq(meta["model"], "minimaxh3", "modelo en el sidecar")
-        c.eq(meta["resolution"], [1920, 1080], "resolucion desde project.json")
-        c.eq(meta["variant"], "gen", "variante en el sidecar")
-        c.eq(meta["task"], "i2v", "task en el sidecar")
-        c.eq(meta["workflow"], {"nodes": []}, "workflow embebido")
-        c.eq(meta["prompt"], {"1": {"class_type": "KSampler"}}, "prompt embebido")
-        c.ok("tot_pant_gen_0010_i2v_v001" in info, "info legible")
-
-        state = core.load_state(Path(out_dir).parent.parent)
-        c.eq(state["current_version"], "v001", "_state.json actualizado")
-        c.eq(state["history"][0]["tasks"], ["i2v"], "task registrada en el historial")
+        core.ensure_project(root, sample_config())
+        c.ok(core.is_within(root, root / "TOTIE" / "shot"), "ruta interna OK")
+        c.ok(not core.is_within(root, root / ".." / "evil"), "ruta externa rechazada")
+        c.ok(not core.is_within(root, Path(tmp).parent), "padre rechazado")
 
 
-def test_build_shot(c: Checker) -> None:
-    print("\n[test_build_shot]")
-    project = sample_project()
-    root = Path("E:/COMFY_OUTPUT")
+# ---------------------------------------------------------------------------
+# Nodes (smoke, folder_paths simulado)
+# ---------------------------------------------------------------------------
 
-    shot = core.build_shot(root, project, "pant", "0010", variant="gen")
-    c.eq(shot["shot_name"], "boca", "nombre leido de project.json")
-    c.eq(shot["variant"], "gen", "variante")
-    c.ok(shot["path"].endswith("pant\\gen\\0010_boca") or shot["path"].endswith("pant/gen/0010_boca"),
-         "ruta del plano")
-
-    nuevo = core.build_shot(root, project, "pant", "0040", variant="gen", shot_name="pasillo")
-    c.eq(nuevo["shot_name"], "pasillo", "nombre explicito para un plano nuevo")
-
-    updated = core.add_shot(project, "pant", "0040", "pasillo")
-    c.eq(updated["sequences"]["pant"]["shots"]["0040"], "pasillo", "add_shot registra el plano")
-    c.ok("0040" not in project["sequences"]["pant"]["shots"], "add_shot no muta el original")
-
-    twice = core.add_shot(updated, "pant", "0040", "pasillo")
-    c.eq(twice["sequences"]["pant"]["shots"]["0040"], "pasillo", "add_shot idempotente")
-
-    created = core.add_shot(project, "ext", "0010", "plaza")
-    c.eq(created["sequences"]["ext"]["shots"]["0010"], "plaza", "add_shot crea la secuencia si falta")
-
-    c.raises(ValueError, lambda: core.add_shot(project, "pant", "0040", ""), "shot_name vacio")
-    c.raises(ValueError, lambda: core.add_shot(project, "../x", "0040", "x"), "seq con traversal")
-
-
-def test_current_version(c: Checker) -> None:
-    print("\n[test_current_version]")
+def test_cos_project_node(c: Checker) -> None:
+    print("\n[test_cos_project_node]  (smoke, folder_paths simulado)")
     with tempfile.TemporaryDirectory() as tmp:
-        shot = Path(tmp) / "0010_boca"
-        (shot / "02_WORK").mkdir(parents=True)
-        c.eq(core.current_version(shot), None, "sin versiones -> None")
+        with fake_comfy(tmp) as nodes:
+            node = nodes.COSProject()
+            config, cfg_path, info = node.run(
+                "create", "TOTIE", 24, 3840, 2160, "TOTIE_003_0030,TOTIE_CHR_Totie:asset"
+            )
+        c.eq(config["name"], "TOTIE", "config creado")
+        c.ok(Path(cfg_path).is_file(), "TOTIE.json escrito")
+        c.ok((Path(tmp) / "TOTIE" / "shot" / "TOTIE_003_0030" / "work").is_dir(), "arbol del shot")
+        c.ok((Path(tmp) / "TOTIE" / "asset" / "TOTIE_CHR_Totie" / "version").is_dir(), "arbol del asset")
+        c.ok("2 entidades" in info, "info con el recuento")
 
-        core.resolve_version(shot, "new")
-        c.eq(core.current_version(shot), "v001", "current_version lee el estado")
-        c.ok(not (shot / "02_WORK" / "v002").exists(), "current_version no crea carpetas")
-
-        shot2 = Path(tmp) / "0020_oreja"
-        (shot2 / "02_WORK" / "v003").mkdir(parents=True)
-        c.eq(core.current_version(shot2), "v003", "sin estado -> max(existentes)")
+        with fake_comfy(tmp) as nodes:
+            loaded, _, info2 = nodes.COSProject().run(
+                "load", "TOTIE", 24, 1920, 1080, "OTRO_X_Y"
+            )
+        c.eq(loaded["formats"][0]["width"], 3840, "load ignora los inputs y lee el config")
+        c.ok("loaded" in info2, "info = loaded")
 
 
 def test_cos_shot_node(c: Checker) -> None:
     print("\n[test_cos_shot_node]  (smoke, folder_paths simulado)")
     with tempfile.TemporaryDirectory() as tmp:
-        root = Path(tmp)
-        project = sample_project()
-        core.build_skeleton(root, project)
-        core.write_project(root, project)
+        with fake_comfy(tmp) as nodes:
+            config, _, _ = nodes.COSProject().run("create", "TOTIE", 24, 3840, 2160, "TOTIE_003_0030")
+            shot, shot_path, info = nodes.COSShot().run(config, "TOTIE_004_0010")
+        c.eq(shot["entity"], "TOTIE_004_0010", "entity del COS_SHOT")
+        c.eq(shot["sequence"], "004", "sequence")
+        c.eq(shot["shot"], "0010", "shot")
+        c.ok((Path(shot_path) / "version").is_dir(), "arbol creado")
+        c.ok("registrado" in info, "avisa del registro")
 
-        with fake_comfy(root) as nodes_path:
-            node = nodes_path.COSShot()
-            shot, shot_path, info = node.run(
-                project, "pant", "0040", variant="gen", shot_name="pasillo"
-            )
+        saved = core.load_project_config(core.project_config_path(tmp, "TOTIE"))
+        c.ok("TOTIE_004_0010" in saved["entities"], "entidad registrada en el config")
 
-        c.eq(shot["shot_name"], "pasillo", "COS_SHOT con nombre nuevo")
-        c.ok((Path(shot_path) / "02_WORK").is_dir(), "arbol del plano creado")
-        c.ok("registrado" in info, "info indica registro")
-
-        saved = core.load_project(core.project_json_path(root, "TOT_Totie"))
-        c.eq(saved["sequences"]["pant"]["shots"]["0040"], "pasillo", "plano en project.json")
-        c.ok(core.project_md_path(root, "TOT_Totie").is_file(), "_PROJECT.md regenerado")
-
-        with fake_comfy(root) as nodes_path:
-            again = nodes_path.COSShot()
-            shot2, _, _ = again.run(saved, "pant", "0010", variant="gen")
-        c.eq(shot2["shot_name"], "boca", "plano existente conserva su nombre")
+        with fake_comfy(tmp) as nodes:
+            shot2, _, info2 = nodes.COSShot().run(saved, "TOTIE_003_0030")
+        c.eq(shot2["entity"], "TOTIE_003_0030", "entidad existente")
+        c.ok("registrado" not in info2, "no re-registra")
 
 
-def test_cos_path_with_shot(c: Checker) -> None:
-    print("\n[test_cos_path_with_shot]  (COS Shot -> COS Path)")
+def test_cos_path_node(c: Checker) -> None:
+    print("\n[test_cos_path_node]  (smoke, folder_paths simulado)")
     with tempfile.TemporaryDirectory() as tmp:
-        root = Path(tmp)
-        project = sample_project()
-        core.build_skeleton(root, project)
-        core.write_project(root, project)
-
-        with fake_comfy(root) as nodes_path:
-            shot, shot_path, _ = nodes_path.COSShot().run(
-                project, "pant", "0040", variant="gen", shot_name="pasillo"
+        with fake_comfy(tmp) as nodes:
+            config, _, _ = nodes.COSProject().run("create", "TOTIE", 24, 3840, 2160, "TOTIE_003_0030")
+            shot, _, _ = nodes.COSShot().run(config, "TOTIE_003_0030")
+            out = nodes.COSPath().run(
+                config, "TOTIE_003_0030", "i2v", "new",
+                shot=shot, description="callao", model="minimaxh3", seed=1234,
+                artist="Mike", dependencies="TOTIE_003_0030_i2i_gen_v0001",
+                prompt={"1": {"class_type": "KSampler"}},
+                extra_pnginfo={"workflow": {"nodes": []}},
             )
-            out = nodes_path.COSPath().run(
-                project, "pant", "0010", "i2v", "new", shot=shot, variant="gen"
-            )
-
-        exr, _, _, version, out_dir, _ = out
+        png, exr, mov, version, out_dir, info = out
+        c.eq(version, "v0001", "primera version")
         c.eq(
-            exr,
-            "PROJECTS/TOT_Totie/pant/gen/0040_pasillo/02_WORK/v001/tot_pant_gen_0040_i2v_v001",
-            "el prefijo usa el nombre del COS_SHOT",
+            png,
+            "TOTIE/shot/TOTIE_003_0030/version/i2v/TOTIE_003_0030_i2v_callao_v0001/_png/"
+            "TOTIE_003_0030_i2v_callao_v0001",
+            "prefijo png",
         )
-        c.eq(Path(out_dir), Path(shot_path) / "02_WORK" / "v001", "out_dir = carpeta del shot")
+        c.ok(exr.endswith("_exr/TOTIE_003_0030_i2v_callao_v0001"), "prefijo exr")
+        c.ok(mov.endswith("_mov/TOTIE_003_0030_i2v_callao_v0001"), "prefijo mov")
+        c.ok(Path(out_dir).is_dir(), "carpeta de version creada")
+
+        meta_path = Path(out_dir) / "TOTIE_003_0030_i2v_callao_v0001.json"
+        c.ok(meta_path.is_file(), "sidecar de version escrito")
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        c.eq(meta["name"], "TOTIE_003_0030_i2v_callao_v0001", "name del sidecar")
+        c.eq(meta["entity"], "TOTIE_003_0030", "entity")
+        c.eq(meta["task"], "i2v", "task")
+        c.eq(meta["description"], "callao", "description")
+        c.eq(meta["sequence"], "003", "sequence")
+        c.eq(meta["user"], "Mike", "user")
+        c.eq(meta["version"], 1, "version int")
+        c.eq(meta["dependencies"], ["TOTIE_003_0030_i2i_gen_v0001"], "dependencies")
+        c.eq(meta["comfy"]["model"], "minimaxh3", "modelo en comfy")
+        c.eq(meta["comfy"]["seed"], 1234, "seed en comfy")
+        c.eq(meta["comfy"]["resolution"], [3840, 2160], "resolucion del config")
+        c.eq(meta["comfy"]["workflow"], {"nodes": []}, "workflow en comfy")
+
+        workfile = Path(tmp) / "TOTIE" / "shot" / "TOTIE_003_0030" / "work" / "i2v" / "Mike"
+        c.ok((workfile / "TOTIE_003_0030_i2v_callao_v0001.json").is_file(), "workfile guardado")
+        c.ok((Path(out_dir) / "_source" / "TOTIE_003_0030_i2v_callao_v0001.json").is_file(),
+             "copia en _source")
+
+        with fake_comfy(tmp) as nodes:
+            out2 = nodes.COSPath().run(config, "TOTIE_003_0030", "i2v", "new", description="callao")
+        c.eq(out2[3], "v0002", "segunda pasada -> v0002")
+        with fake_comfy(tmp) as nodes:
+            out3 = nodes.COSPath().run(config, "TOTIE_003_0030", "i2v", "current", description="callao")
+        c.eq(out3[3], "v0002", "current reusa la ultima")
 
 
 def test_cos_approve_node(c: Checker) -> None:
     print("\n[test_cos_approve_node]  (smoke, folder_paths simulado)")
     with tempfile.TemporaryDirectory() as tmp:
-        root = Path(tmp)
-        project = sample_project()
-        core.build_skeleton(root, project)
-        core.write_project(root, project)
-
-        with fake_comfy(root) as nodes_path:
-            shot_node = nodes_path.COSShot()
-            shot, shot_path, _ = shot_node.run(project, "pant", "0010", variant="gen")
-
-            path_node = nodes_path.COSPath()
-            _, _, _, version, out_dir, _ = path_node.run(
-                project, "pant", "0010", "i2v", "new", variant="gen", model="minimaxh3"
+        with fake_comfy(tmp) as nodes:
+            config, _, _ = nodes.COSProject().run("create", "TOTIE", 24, 3840, 2160, "TOTIE_003_0030")
+            shot, _, _ = nodes.COSShot().run(config, "TOTIE_003_0030")
+            _, _, _, version, out_dir, _ = nodes.COSPath().run(
+                config, "TOTIE_003_0030", "i2v", "new", shot=shot, description="callao",
+                extra_pnginfo={"workflow": {"nodes": []}},
             )
+            vpath = Path(out_dir)
+            (vpath / "_png").mkdir(parents=True, exist_ok=True)
+            (vpath / "_mov").mkdir(exist_ok=True)
+            (vpath / "_png" / f"TOTIE_003_0030_i2v_callao_{version}_00001_.png").write_text("still")
+            (vpath / "_mov" / f"TOTIE_003_0030_i2v_callao_{version}_00001_.mp4").write_text("mov")
 
-            vdir = Path(out_dir)
-            (vdir / f"tot_pant_gen_0010_i2v_{version}_00001_.mp4").write_text("render")
-            (vdir / f"tot_pant_gen_0010_i2i_{version}_00001_.png").write_text("otra-task")
-
-            approve = nodes_path.COSApprove()
-            published, count, info = approve.run("i2v", shot=shot, version="current")
-
+            published, count, info = nodes.COSApprove().run(
+                "i2v", shot=shot, version="current", description="callao"
+            )
         names = published.splitlines()
-        c.eq(count, 2, "publica render + sidecar de la task i2v")
-        c.ok(f"tot_pant_gen_0010_i2v_{version}_00001_.mp4" in names, "render publicado")
-        c.ok(f"tot_pant_gen_0010_i2v_{version}_meta.json" in names, "sidecar publicado")
-        c.ok(f"tot_pant_gen_0010_i2i_{version}_00001_.png" not in names, "no publica otras tasks")
+        c.eq(count, 4, "publica sidecar + _source + _png + _mov")
+        c.ok("TOTIE_003_0030_i2v_callao_v0001.json" in names, "sidecar de version publicado")
+        c.ok("_png" in names, "pack png publicado")
 
-        publish_dir = Path(shot_path) / "03_PUBLISH"
-        c.ok((publish_dir / f"tot_pant_gen_0010_i2v_{version}_00001_.mp4").is_file(),
-             "archivo en 03_PUBLISH")
-        c.ok((vdir / f"tot_pant_gen_0010_i2v_{version}_00001_.mp4").is_file(),
-             "el original permanece (copy, no move)")
-        c.ok("03_PUBLISH" in info, "info legible")
+        dest = Path(tmp) / "TOTIE" / "shot" / "TOTIE_003_0030" / "publish" / "i2v" / "TOTIE_003_0030_i2v_callao_v0001"
+        c.ok((dest / "_png" / "TOTIE_003_0030_i2v_callao_v0001_00001_.png").is_file(), "render en publish")
+        c.ok((dest / "_png" / "_png.json").is_file(), "sidecar de salida en publish")
+        c.ok((vpath / "_png" / "TOTIE_003_0030_i2v_callao_v0001_00001_.png").is_file(),
+             "el original permanece")
+        c.ok("publish" in info, "info legible")
 
-        with fake_comfy(root) as nodes_path:
-            approve2 = nodes_path.COSApprove()
-            c.raises(ValueError, lambda: approve2.run("i2v", shot_path=str(Path(tmp) / "nope")),
-                     "plano sin versiones -> ValueError")
-            c.raises(ValueError, lambda: approve2.run("i2v"), "sin shot ni shot_path -> ValueError")
+        with fake_comfy(tmp) as nodes:
+            c.raises(
+                ValueError,
+                lambda: nodes.COSApprove().run("i2v", shot_path=str(Path(tmp) / "nope" / "shot" / "X_Y_Z")),
+                "entidad sin versiones -> ValueError",
+            )
+            c.raises(ValueError, lambda: nodes.COSApprove().run("i2v"), "sin shot ni shot_path")
 
 
 # ---------------------------------------------------------------------------
@@ -638,37 +602,30 @@ def main() -> int:
     c = Checker()
 
     print("=" * 70)
-    print("COS — Validator (Fases 0-3: core, COS Project, COS Path, COS Shot/Approve)")
+    print("COS — Validator v2 (gramatica compatible con el pipeline)")
     print("=" * 70)
 
-    test_slug(c)
-    test_build_filename(c)
-    test_validate_component(c)
+    test_versions(c)
+    test_validation(c)
+    test_grammar(c)
+    test_project_config(c)
+    test_paths(c)
     test_skeleton(c)
-    test_version_current(c)
-    test_version_new(c)
-    test_state_idempotent(c)
-    test_sidecar(c)
-    test_project_json_roundtrip(c)
-    test_approve_copy(c)
-    test_traversal(c)
-    test_render_project_md(c)
-    test_parse_inputs(c)
-    test_build_project_dict(c)
-    test_resolve_shot_dir(c)
-    test_resolve_resolution(c)
+    test_versions_resolution(c)
     test_build_output(c)
-    test_ensure_shot_dirs(c)
-    test_cos_path_node(c)
-    test_build_shot(c)
-    test_current_version(c)
+    test_version_meta(c)
+    test_output_meta(c)
+    test_output_sidecars(c)
+    test_publish_version(c)
+    test_dependencies_and_traversal(c)
+    test_cos_project_node(c)
     test_cos_shot_node(c)
-    test_cos_path_with_shot(c)
+    test_cos_path_node(c)
     test_cos_approve_node(c)
 
     print("\n" + "=" * 70)
     if c.failures == 0:
-        print("TODOS LOS TESTS PASARON — COS core OK")
+        print("TODOS LOS TESTS PASARON — COS core v2 OK")
         print("=" * 70)
         return 0
     print(f"{c.failures} FALLOS detectados — revisar arriba")
