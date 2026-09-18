@@ -10,7 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from . import core
-from .nodes_project import default_artist, output_root
+from .nodes_project import default_artist, entity_choices, output_root
 
 try:
     import folder_paths  # noqa: F401  (present only inside ComfyUI)
@@ -69,14 +69,16 @@ class COSShot:
 
     @classmethod
     def INPUT_TYPES(cls):
+        choices = entity_choices()
         return {
             "required": {
                 "project": ("COS_PROJECT", {"tooltip": "Objeto del nodo COS Project."}),
-                "entity": ("STRING", {"default": "TOTIE_003_0030", "tooltip": "Entidad <PROJECT>_<SEQ>_<SHOT>."}),
+                "entity": (choices, {"default": choices[0], "tooltip": "Entidad registrada en algun config. Pulsa R (o Refresh COS) para actualizar la lista."}),
             },
             "optional": {
                 "project_path": ("STRING", {"default": "", "tooltip": "Alternativa a 'project': ruta al <PROJECT>.json."}),
-                "entity_type": (list(core.ENTITY_TYPES), {"default": "shot", "tooltip": "shot o asset."}),
+                "entity_manual": ("STRING", {"default": "", "tooltip": "Entidad nueva o no listada: si no esta vacia, sustituye al desplegable."}),
+                "entity_type": (list(core.ENTITY_TYPES), {"default": "shot", "tooltip": "shot o asset (solo para entidades nuevas)."}),
                 "register": ("BOOLEAN", {"default": True, "tooltip": "Registra la entidad en el config si no estaba."}),
             },
         }
@@ -92,12 +94,13 @@ class COSShot:
         project,
         entity: str,
         project_path: str = "",
+        entity_manual: str = "",
         entity_type: str = "shot",
         register: bool = True,
     ):
         root = output_root()
         config = _resolve_project(project, project_path)
-        entity = (entity or "").strip()
+        entity = (entity_manual or "").strip() or (entity or "").strip()
         tokens = core.split_entity(entity)
 
         if entity_type not in core.ENTITY_TYPES:
@@ -142,10 +145,11 @@ class COSPath:
 
     @classmethod
     def INPUT_TYPES(cls):
+        choices = entity_choices()
         return {
             "required": {
                 "project": ("COS_PROJECT", {"tooltip": "Objeto del nodo COS Project."}),
-                "entity": ("STRING", {"default": "TOTIE_003_0030", "tooltip": "Entidad <PROJECT>_<SEQ>_<SHOT>."}),
+                "entity": (choices, {"default": choices[0], "tooltip": "Entidad registrada en algun config. Pulsa R (o Refresh COS) para actualizar la lista."}),
                 "task": (
                     list(core.VALID_TASKS),
                     {"default": "i2v", "tooltip": "Task propia de COS. Para una libre usa 'task_custom'."},
@@ -158,6 +162,7 @@ class COSPath:
             "optional": {
                 "shot": ("COS_SHOT", {"tooltip": "Objeto del nodo COS Shot: fija entidad y tipo."}),
                 "project_path": ("STRING", {"default": "", "tooltip": "Alternativa a 'project'."}),
+                "entity_manual": ("STRING", {"default": "", "tooltip": "Entidad nueva o no listada: si no esta vacia, sustituye al desplegable."}),
                 "description": ("STRING", {"default": "", "tooltip": "Descriptivo opcional (ej. callao, granvia). Va al nombre y al sidecar."}),
                 "task_custom": ("STRING", {"default": "", "tooltip": "Task libre; si no esta vacia, sustituye a 'task'."}),
                 "dependencies": ("STRING", {"default": "", "multiline": True, "tooltip": "Versiones de las que come esta (una por linea). Va al sidecar."}),
@@ -185,6 +190,7 @@ class COSPath:
         version_mode: str,
         shot=None,
         project_path: str = "",
+        entity_manual: str = "",
         description: str = "",
         task_custom: str = "",
         dependencies: str = "",
@@ -204,11 +210,15 @@ class COSPath:
         if isinstance(shot, dict) and shot.get("entity"):
             entity = shot["entity"]
             entity_type = shot.get("entity_type", "shot")
-        entity = (entity or "").strip()
+        entity = (entity_manual or "").strip() or (entity or "").strip()
 
         task = core.normalize_task(task_custom) if (task_custom or "").strip() else core.normalize_task(task)
         description = core.normalize_description(description)
-        artist = (artist or "").strip() or default_artist()
+        artist = (
+            (artist or "").strip()
+            or (config.get("artist") or "").strip()
+            or default_artist()
+        )
 
         project_name = config.get("name") or core.split_entity(entity)["project"]
         vtask = core.version_task_dir(root, project_name, entity_type, entity, task)

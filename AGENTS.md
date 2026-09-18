@@ -38,7 +38,8 @@ VFX-Nodes/
 ├── validate_cos.py          Standalone test suite for COS (Phases 0-3)
 ├── requirements.txt         opencv-contrib-python (optional, for corrections node)
 ├── js/
-│   └── vfx_colors.js        ComfyUI UI colors (orange theme for VFX category)
+│   ├── vfx_colors.js        ComfyUI UI colors (orange theme for VFX category)
+│   └── cos_ui.js            COS theme + Refresh button (dynamic entity combos)
 ├── docs/                    Project specifications (linked from Obsidian vault)
 ├── README.md                User-facing documentation
 └── AGENTS.md                This file

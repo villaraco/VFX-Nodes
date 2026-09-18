@@ -435,6 +435,55 @@ def test_publish_version(c: Checker) -> None:
                  "version inexistente")
 
 
+def test_list_entities(c: Checker) -> None:
+    print("\n[test_list_entities]")
+    with tempfile.TemporaryDirectory() as tmp:
+        c.eq(core.list_entities(tmp), {}, "sin proyectos -> vacio")
+
+        cfg = sample_config()
+        core.write_project_config(tmp, cfg)
+        entities = core.list_entities(tmp)
+        c.eq(
+            sorted(entities),
+            ["TOTIE_003_0010", "TOTIE_003_0030", "TOTIE_CHR_Totie"],
+            "lista las entidades del proyecto",
+        )
+        c.eq(entities["TOTIE_003_0030"]["project"], "TOTIE", "project de la entidad")
+        c.eq(entities["TOTIE_CHR_Totie"]["entity_type"], "asset", "entity_type del asset")
+        c.eq(entities["TOTIE_003_0030"]["entity_type"], "shot", "entity_type del shot")
+
+        other = core.build_project_config(
+            "OTRO", entities={"OTRO_001_0010": {"entity_type": "shot"}}, root=tmp
+        )
+        core.write_project_config(tmp, other)
+        c.eq(len(core.list_entities(tmp)), 4, "acumula entidades de varios proyectos")
+
+        bad = core.build_project_config("MALO", entities={"NOESVALIDA": {}}, root=tmp)
+        core.write_project_config(tmp, bad)
+        c.ok("NOESVALIDA" not in core.list_entities(tmp), "ignora entidades mal formadas")
+
+
+def test_entity_choices(c: Checker) -> None:
+    print("\n[test_entity_choices]  (smoke, folder_paths simulado)")
+    with tempfile.TemporaryDirectory() as tmp:
+        with fake_comfy(tmp) as nodes:
+            c.eq(
+                nodes.project.entity_choices(),
+                [nodes.project.FALLBACK_ENTITY],
+                "sin proyectos -> fallback (el combo necesita un valor)",
+            )
+            nodes.COSProject().run("create", "TOTIE", 24, 3840, 2160, "TOTIE_003_0030")
+            choices = nodes.project.entity_choices()
+        c.ok("TOTIE_003_0030" in choices, "el combo incluye la entidad creada")
+        c.eq(choices, sorted(choices), "combo ordenado")
+
+        with fake_comfy(tmp) as nodes:
+            c.ok("TOTIE_003_0030" in nodes.COSShot.INPUT_TYPES()["required"]["entity"][0],
+                 "COS Shot: combo con entidades")
+            c.ok("TOTIE_003_0030" in nodes.COSPath.INPUT_TYPES()["required"]["entity"][0],
+                 "COS Path: combo con entidades")
+
+
 def test_dependencies_and_traversal(c: Checker) -> None:
     print("\n[test_dependencies_and_traversal]")
     c.eq(
@@ -499,6 +548,10 @@ def test_cos_shot_node(c: Checker) -> None:
         c.eq(shot2["entity"], "TOTIE_003_0030", "entidad existente")
         c.ok("registrado" not in info2, "no re-registra")
 
+        with fake_comfy(tmp) as nodes:
+            shot3, _, _ = nodes.COSShot().run(saved, "TOTIE_003_0030", entity_manual="TOTIE_005_0040")
+        c.eq(shot3["entity"], "TOTIE_005_0040", "entity_manual sustituye al desplegable")
+
 
 def test_cos_path_node(c: Checker) -> None:
     print("\n[test_cos_path_node]  (smoke, folder_paths simulado)")
@@ -552,6 +605,16 @@ def test_cos_path_node(c: Checker) -> None:
         with fake_comfy(tmp) as nodes:
             out3 = nodes.COSPath().run(config, "TOTIE_003_0030", "i2v", "current", description="callao")
         c.eq(out3[3], "v0002", "current reusa la ultima")
+
+        with fake_comfy(tmp) as nodes:
+            nodes.COSPath().run(
+                dict(config, artist="mik"), "TOTIE_003_0030", "i2v", "current",
+                description="callao", extra_pnginfo={"workflow": {"nodes": []}},
+            )
+        c.ok(
+            (Path(tmp) / "TOTIE" / "shot" / "TOTIE_003_0030" / "work" / "i2v" / "mik").is_dir(),
+            "el artist del config se usa como respaldo",
+        )
 
 
 def test_cos_approve_node(c: Checker) -> None:
@@ -617,6 +680,8 @@ def main() -> int:
     test_output_meta(c)
     test_output_sidecars(c)
     test_publish_version(c)
+    test_list_entities(c)
+    test_entity_choices(c)
     test_dependencies_and_traversal(c)
     test_cos_project_node(c)
     test_cos_shot_node(c)

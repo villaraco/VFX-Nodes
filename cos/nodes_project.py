@@ -31,6 +31,19 @@ def default_artist() -> str:
     return os.environ.get("COS_ARTIST") or os.environ.get("USERNAME") or "comfy"
 
 
+#: Used when no project config exists yet (the combo needs at least one value).
+FALLBACK_ENTITY = "TOTIE_003_0030"
+
+
+def entity_choices() -> list[str]:
+    """Entities of every project config, for the dynamic dropdowns."""
+    try:
+        entities = sorted(core.list_entities(output_root()))
+    except Exception:  # noqa: BLE001  (no root yet, broken config, standalone)
+        entities = []
+    return entities or [FALLBACK_ENTITY]
+
+
 class COSProject:
     """Create or load a COS project: ``<PROJECT>.json`` + ``_PROJECT.md`` + tree.
 

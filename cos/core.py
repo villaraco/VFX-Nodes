@@ -364,6 +364,27 @@ def list_projects(root: Path | str) -> list[dict]:
     return out
 
 
+def list_entities(root: Path | str) -> dict:
+    """Every entity across all project configs.
+
+    ``{entity: {"project": <name>, "entity_type": "shot"|"asset"}}`` — feeds the
+    dynamic dropdowns of the nodes.
+    """
+    out: dict = {}
+    for config in list_projects(root):
+        project = config.get("name") or ""
+        for entity, edef in (config.get("entities") or {}).items():
+            try:
+                split_entity(entity)
+            except ValueError:
+                continue
+            out[entity] = {
+                "project": project,
+                "entity_type": (edef or {}).get("entity_type", "shot"),
+            }
+    return out
+
+
 def config_format(config: dict) -> dict:
     """First format entry of a project config (width/height/par)."""
     formats = config.get("formats") or []

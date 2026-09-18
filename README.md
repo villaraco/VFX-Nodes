@@ -71,9 +71,11 @@ Gramatica: `{entity}_{task}[_{description}]_v####` con `entity` =
   `exr_prefix`/`video_prefix` + sidecar de version con bloque `comfy` +
   workfile + `_source`) y **`COS Approve`** (sidecars de salida + copia a
   `publish/<task>/`).
-- **Fases 4-6:** dropdowns dinamicos de entidades, publicacion real (ruta de
-  entrega + ShotGrid) y lectura de sidecars en CAT-Comfy. Ver
-  `docs/Plan - COS Nodes.md`.
+- **Fase 4 (actual):** desplegables dinamicos de entidades (poblados desde los
+  `<PROJECT>.json`) con escape manual `entity_manual`, y `js/cos_ui.js` (tema
+  marron de la categoria `COS` + boton **Refresh COS**, equivalente a pulsar R).
+- **Fases 5-6:** publicacion real (ruta de entrega + ShotGrid) y lectura de
+  sidecars en CAT-Comfy. Ver `docs/Plan - COS Nodes.md`.
 
 > Nota: la v1 (gramatica `<show>_<seq>_<variante>_<shot>_<task>_v###`,
 > `01_INPUT/02_WORK/03_PUBLISH`) quedo descartada al adoptar la gramatica del
