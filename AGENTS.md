@@ -30,9 +30,9 @@ VFX-Nodes/
 ├── queue_flux_batch.py      CLI to queue all Flux batch prompts via HTTP API
 ├── cos/                     COS (Comfy Output Standard) subpackage
 │   ├── __init__.py          COS_NODE_CLASS_MAPPINGS (guarded by folder_paths)
-│   ├── core.py              Pure logic: naming, skeleton, versioning, sidecar, publish
-│   ├── nodes_project.py     COS Project node (create/load/refresh)
-│   └── nodes_path.py        COS Path / COS Shot / COS Approve nodes
+│   ├── core.py              Pure logic: grammar, paths, config, versioning, sidecars, publish
+│   ├── nodes_project.py     COS Project node (project config + skeleton)
+│   └── nodes_path.py        COS Shot / COS Path / COS Approve nodes
 ├── validate_roundtrip.py    Standalone test suite for VFX nodes (no ComfyUI needed)
 ├── validate_flux_batch.py   Standalone test suite for VFXFluxBatchPrompts
 ├── validate_cos.py          Standalone test suite for COS (Phases 0-3)

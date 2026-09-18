@@ -53,22 +53,31 @@ Salidas: `prompt`, `negative_prompt`, `seed`, `piece_name`, `piece_number`,
 
 ## COS (Comfy Output Standard)
 
-Subpaquete `cos/` que implementa el estandar COS de organizacion de outputs:
-nombres cortos (`<show>_<seq>[_<variant>]_<shot>_<task>_v###`), arbol
-`PROJECTS/<slug>/<seq>/[<variant>]/<shot>/{01_INPUT,02_WORK,03_PUBLISH}`,
-versionado (`_state.json`) y sidecar `_meta.json` con la procedencia completa.
+Subpaquete `cos/` que implementa el estandar COS de organizacion de outputs.
+**Sistema independiente** (root propio = output dir de ComfyUI), pero con
+**gramatica y sidecars compatibles con el pipeline del estudio** (KrakenPipeline),
+para que la publicacion a compo entregue igual que el 3D.
 
-- **Fases 0-3 (actual):** logica pura en `cos/core.py` (naming, esqueleto,
-  versionado, sidecar, publish `03_PUBLISH`, anti-traversal), el nodo
-  **`COS Project`** (`cos/nodes_project.py`: create/load/refresh del proyecto,
-  `project.json` + `_PROJECT.md`), **`COS Path`** (`cos/nodes_path.py`: prefijo
-  corto `exr_prefix`/`video_prefix`/`png_prefix`, version `current`/`new` y
-  sidecar `_meta.json` con seed, modelo, resolucion, workflow y prompt),
-  **`COS Shot`** (asegura un plano y lo registra en `project.json`) y
-  **`COS Approve`** (copia render + sidecar a `03_PUBLISH` sin renombrar).
-  Root = output dir de ComfyUI.
-- **Fases 4-5:** dropdowns dinamicos, `js/cos_ui.js` e integracion del workflow
-  Totie. Ver `docs/Plan - COS Nodes.md`.
+Gramatica: `{entity}_{task}[_{description}]_v####` con `entity` =
+`PROJECT_SEQ_SHOT` (ej. `TOTIE_003_0030_i2v_callao_v0001`). Arbol
+`<PROJECT>/{shot|asset}/<ENTITY>/{work,version,publish}` y packs `_png`,
+`_exr`, `_mov` con su sidecar `_<pack>.json`.
+
+- **v2 (actual, 2026-09-18):** reescritura clean-room con la gramatica del
+  estudio. `cos/core.py` (gramatica, rutas, config de proyecto, versiones,
+  sidecars, publish, anti-traversal) y cuatro nodos: **`COS Project`**
+  (config `<PROJECT>.json` + `_PROJECT.md` + arbol), **`COS Shot`** (asegura y
+  registra la entidad), **`COS Path`** (version + prefijos `png_prefix`/
+  `exr_prefix`/`video_prefix` + sidecar de version con bloque `comfy` +
+  workfile + `_source`) y **`COS Approve`** (sidecars de salida + copia a
+  `publish/<task>/`).
+- **Fases 4-6:** dropdowns dinamicos de entidades, publicacion real (ruta de
+  entrega + ShotGrid) y lectura de sidecars en CAT-Comfy. Ver
+  `docs/Plan - COS Nodes.md`.
+
+> Nota: la v1 (gramatica `<show>_<seq>_<variante>_<shot>_<task>_v###`,
+> `01_INPUT/02_WORK/03_PUBLISH`) quedo descartada al adoptar la gramatica del
+> pipeline del estudio.
 
 ## Scripts auxiliares
 
