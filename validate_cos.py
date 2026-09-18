@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import sys
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
@@ -421,25 +422,37 @@ def test_ensure_shot_dirs(c: Checker) -> None:
         c.ok((shot / "_NOTES.md").is_file(), "ensure_shot_dirs crea _NOTES.md")
 
 
-def test_cos_path_node(c: Checker) -> None:
-    print("\n[test_cos_path_node]  (smoke, folder_paths simulado)")
+@contextmanager
+def fake_comfy(output_dir):
+    """Import ``cos.nodes_path`` with a simulated ``folder_paths`` module."""
     import importlib
     import types
 
+    fake = types.ModuleType("folder_paths")
+    fake.get_output_directory = lambda: str(output_dir)
+    previous = sys.modules.get("folder_paths")
+    sys.modules["folder_paths"] = fake
+    try:
+        import cos.nodes_path as nodes_path
+
+        importlib.reload(nodes_path)
+        yield nodes_path
+    finally:
+        if previous is None:
+            sys.modules.pop("folder_paths", None)
+        else:
+            sys.modules["folder_paths"] = previous
+
+
+def test_cos_path_node(c: Checker) -> None:
+    print("\n[test_cos_path_node]  (smoke, folder_paths simulado)")
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         project = sample_project()
         core.build_skeleton(root, project)
         core.write_project(root, project)
 
-        fake = types.ModuleType("folder_paths")
-        fake.get_output_directory = lambda: str(root)
-        previous = sys.modules.get("folder_paths")
-        sys.modules["folder_paths"] = fake
-        try:
-            import cos.nodes_path as nodes_path
-
-            importlib.reload(nodes_path)
+        with fake_comfy(root) as nodes_path:
             node = nodes_path.COSPath()
             out = node.run(
                 project, "pant", "0010", "i2v", "new",
@@ -447,11 +460,6 @@ def test_cos_path_node(c: Checker) -> None:
                 prompt={"1": {"class_type": "KSampler"}},
                 extra_pnginfo={"workflow": {"nodes": []}},
             )
-        finally:
-            if previous is None:
-                sys.modules.pop("folder_paths", None)
-            else:
-                sys.modules["folder_paths"] = previous
 
         exr, video, png, version, out_dir, info = out
         c.eq(
@@ -481,6 +489,147 @@ def test_cos_path_node(c: Checker) -> None:
         c.eq(state["history"][0]["tasks"], ["i2v"], "task registrada en el historial")
 
 
+def test_build_shot(c: Checker) -> None:
+    print("\n[test_build_shot]")
+    project = sample_project()
+    root = Path("E:/COMFY_OUTPUT")
+
+    shot = core.build_shot(root, project, "pant", "0010", variant="gen")
+    c.eq(shot["shot_name"], "boca", "nombre leido de project.json")
+    c.eq(shot["variant"], "gen", "variante")
+    c.ok(shot["path"].endswith("pant\\gen\\0010_boca") or shot["path"].endswith("pant/gen/0010_boca"),
+         "ruta del plano")
+
+    nuevo = core.build_shot(root, project, "pant", "0040", variant="gen", shot_name="pasillo")
+    c.eq(nuevo["shot_name"], "pasillo", "nombre explicito para un plano nuevo")
+
+    updated = core.add_shot(project, "pant", "0040", "pasillo")
+    c.eq(updated["sequences"]["pant"]["shots"]["0040"], "pasillo", "add_shot registra el plano")
+    c.ok("0040" not in project["sequences"]["pant"]["shots"], "add_shot no muta el original")
+
+    twice = core.add_shot(updated, "pant", "0040", "pasillo")
+    c.eq(twice["sequences"]["pant"]["shots"]["0040"], "pasillo", "add_shot idempotente")
+
+    created = core.add_shot(project, "ext", "0010", "plaza")
+    c.eq(created["sequences"]["ext"]["shots"]["0010"], "plaza", "add_shot crea la secuencia si falta")
+
+    c.raises(ValueError, lambda: core.add_shot(project, "pant", "0040", ""), "shot_name vacio")
+    c.raises(ValueError, lambda: core.add_shot(project, "../x", "0040", "x"), "seq con traversal")
+
+
+def test_current_version(c: Checker) -> None:
+    print("\n[test_current_version]")
+    with tempfile.TemporaryDirectory() as tmp:
+        shot = Path(tmp) / "0010_boca"
+        (shot / "02_WORK").mkdir(parents=True)
+        c.eq(core.current_version(shot), None, "sin versiones -> None")
+
+        core.resolve_version(shot, "new")
+        c.eq(core.current_version(shot), "v001", "current_version lee el estado")
+        c.ok(not (shot / "02_WORK" / "v002").exists(), "current_version no crea carpetas")
+
+        shot2 = Path(tmp) / "0020_oreja"
+        (shot2 / "02_WORK" / "v003").mkdir(parents=True)
+        c.eq(core.current_version(shot2), "v003", "sin estado -> max(existentes)")
+
+
+def test_cos_shot_node(c: Checker) -> None:
+    print("\n[test_cos_shot_node]  (smoke, folder_paths simulado)")
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        project = sample_project()
+        core.build_skeleton(root, project)
+        core.write_project(root, project)
+
+        with fake_comfy(root) as nodes_path:
+            node = nodes_path.COSShot()
+            shot, shot_path, info = node.run(
+                project, "pant", "0040", variant="gen", shot_name="pasillo"
+            )
+
+        c.eq(shot["shot_name"], "pasillo", "COS_SHOT con nombre nuevo")
+        c.ok((Path(shot_path) / "02_WORK").is_dir(), "arbol del plano creado")
+        c.ok("registrado" in info, "info indica registro")
+
+        saved = core.load_project(core.project_json_path(root, "TOT_Totie"))
+        c.eq(saved["sequences"]["pant"]["shots"]["0040"], "pasillo", "plano en project.json")
+        c.ok(core.project_md_path(root, "TOT_Totie").is_file(), "_PROJECT.md regenerado")
+
+        with fake_comfy(root) as nodes_path:
+            again = nodes_path.COSShot()
+            shot2, _, _ = again.run(saved, "pant", "0010", variant="gen")
+        c.eq(shot2["shot_name"], "boca", "plano existente conserva su nombre")
+
+
+def test_cos_path_with_shot(c: Checker) -> None:
+    print("\n[test_cos_path_with_shot]  (COS Shot -> COS Path)")
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        project = sample_project()
+        core.build_skeleton(root, project)
+        core.write_project(root, project)
+
+        with fake_comfy(root) as nodes_path:
+            shot, shot_path, _ = nodes_path.COSShot().run(
+                project, "pant", "0040", variant="gen", shot_name="pasillo"
+            )
+            out = nodes_path.COSPath().run(
+                project, "pant", "0010", "i2v", "new", shot=shot, variant="gen"
+            )
+
+        exr, _, _, version, out_dir, _ = out
+        c.eq(
+            exr,
+            "PROJECTS/TOT_Totie/pant/gen/0040_pasillo/02_WORK/v001/tot_pant_gen_0040_i2v_v001",
+            "el prefijo usa el nombre del COS_SHOT",
+        )
+        c.eq(Path(out_dir), Path(shot_path) / "02_WORK" / "v001", "out_dir = carpeta del shot")
+
+
+def test_cos_approve_node(c: Checker) -> None:
+    print("\n[test_cos_approve_node]  (smoke, folder_paths simulado)")
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        project = sample_project()
+        core.build_skeleton(root, project)
+        core.write_project(root, project)
+
+        with fake_comfy(root) as nodes_path:
+            shot_node = nodes_path.COSShot()
+            shot, shot_path, _ = shot_node.run(project, "pant", "0010", variant="gen")
+
+            path_node = nodes_path.COSPath()
+            _, _, _, version, out_dir, _ = path_node.run(
+                project, "pant", "0010", "i2v", "new", variant="gen", model="minimaxh3"
+            )
+
+            vdir = Path(out_dir)
+            (vdir / f"tot_pant_gen_0010_i2v_{version}_00001_.mp4").write_text("render")
+            (vdir / f"tot_pant_gen_0010_i2i_{version}_00001_.png").write_text("otra-task")
+
+            approve = nodes_path.COSApprove()
+            published, count, info = approve.run("i2v", shot=shot, version="current")
+
+        names = published.splitlines()
+        c.eq(count, 2, "publica render + sidecar de la task i2v")
+        c.ok(f"tot_pant_gen_0010_i2v_{version}_00001_.mp4" in names, "render publicado")
+        c.ok(f"tot_pant_gen_0010_i2v_{version}_meta.json" in names, "sidecar publicado")
+        c.ok(f"tot_pant_gen_0010_i2i_{version}_00001_.png" not in names, "no publica otras tasks")
+
+        publish_dir = Path(shot_path) / "03_PUBLISH"
+        c.ok((publish_dir / f"tot_pant_gen_0010_i2v_{version}_00001_.mp4").is_file(),
+             "archivo en 03_PUBLISH")
+        c.ok((vdir / f"tot_pant_gen_0010_i2v_{version}_00001_.mp4").is_file(),
+             "el original permanece (copy, no move)")
+        c.ok("03_PUBLISH" in info, "info legible")
+
+        with fake_comfy(root) as nodes_path:
+            approve2 = nodes_path.COSApprove()
+            c.raises(ValueError, lambda: approve2.run("i2v", shot_path=str(Path(tmp) / "nope")),
+                     "plano sin versiones -> ValueError")
+            c.raises(ValueError, lambda: approve2.run("i2v"), "sin shot ni shot_path -> ValueError")
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -489,7 +638,7 @@ def main() -> int:
     c = Checker()
 
     print("=" * 70)
-    print("COS — Validator (Fases 0-2: core, COS Project, COS Path)")
+    print("COS — Validator (Fases 0-3: core, COS Project, COS Path, COS Shot/Approve)")
     print("=" * 70)
 
     test_slug(c)
@@ -511,6 +660,11 @@ def main() -> int:
     test_build_output(c)
     test_ensure_shot_dirs(c)
     test_cos_path_node(c)
+    test_build_shot(c)
+    test_current_version(c)
+    test_cos_shot_node(c)
+    test_cos_path_with_shot(c)
+    test_cos_approve_node(c)
 
     print("\n" + "=" * 70)
     if c.failures == 0:

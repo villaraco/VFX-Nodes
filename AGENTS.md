@@ -32,10 +32,10 @@ VFX-Nodes/
 │   ├── __init__.py          COS_NODE_CLASS_MAPPINGS (guarded by folder_paths)
 │   ├── core.py              Pure logic: naming, skeleton, versioning, sidecar, publish
 │   ├── nodes_project.py     COS Project node (create/load/refresh)
-│   └── nodes_path.py        COS Path node (prefixes + version + sidecar)
+│   └── nodes_path.py        COS Path / COS Shot / COS Approve nodes
 ├── validate_roundtrip.py    Standalone test suite for VFX nodes (no ComfyUI needed)
 ├── validate_flux_batch.py   Standalone test suite for VFXFluxBatchPrompts
-├── validate_cos.py          Standalone test suite for COS (Phases 0-2)
+├── validate_cos.py          Standalone test suite for COS (Phases 0-3)
 ├── requirements.txt         opencv-contrib-python (optional, for corrections node)
 ├── js/
 │   └── vfx_colors.js        ComfyUI UI colors (orange theme for VFX category)
@@ -72,7 +72,7 @@ VFX-Nodes/
 python validate_roundtrip.py        # VFX nodes (all tests)
 python validate_roundtrip.py --all  # Same
 python validate_flux_batch.py       # Flux batch node
-python validate_cos.py              # COS (Phases 0-2: core, COS Project, COS Path)
+python validate_cos.py              # COS (Phases 0-3: core + 4 nodes)
 ```
 
 CI/CD: exit code 0 = all pass, exit code 1 = failures.

@@ -58,15 +58,17 @@ nombres cortos (`<show>_<seq>[_<variant>]_<shot>_<task>_v###`), arbol
 `PROJECTS/<slug>/<seq>/[<variant>]/<shot>/{01_INPUT,02_WORK,03_PUBLISH}`,
 versionado (`_state.json`) y sidecar `_meta.json` con la procedencia completa.
 
-- **Fases 0-2 (actual):** logica pura en `cos/core.py` (naming, esqueleto,
+- **Fases 0-3 (actual):** logica pura en `cos/core.py` (naming, esqueleto,
   versionado, sidecar, publish `03_PUBLISH`, anti-traversal), el nodo
   **`COS Project`** (`cos/nodes_project.py`: create/load/refresh del proyecto,
-  `project.json` + `_PROJECT.md`) y el nodo **`COS Path`**
-  (`cos/nodes_path.py`: prefijo corto `exr_prefix`/`video_prefix`/`png_prefix`,
-  version `current`/`new` y sidecar `_meta.json` con seed, modelo, resolucion,
-  workflow y prompt). Root = output dir de ComfyUI.
-- **Fases 3-5:** `COS Shot`, `COS Approve`, dropdowns dinamicos y
-  `js/cos_ui.js`. Ver `docs/Plan - COS Nodes.md`.
+  `project.json` + `_PROJECT.md`), **`COS Path`** (`cos/nodes_path.py`: prefijo
+  corto `exr_prefix`/`video_prefix`/`png_prefix`, version `current`/`new` y
+  sidecar `_meta.json` con seed, modelo, resolucion, workflow y prompt),
+  **`COS Shot`** (asegura un plano y lo registra en `project.json`) y
+  **`COS Approve`** (copia render + sidecar a `03_PUBLISH` sin renombrar).
+  Root = output dir de ComfyUI.
+- **Fases 4-5:** dropdowns dinamicos, `js/cos_ui.js` e integracion del workflow
+  Totie. Ver `docs/Plan - COS Nodes.md`.
 
 ## Scripts auxiliares
 

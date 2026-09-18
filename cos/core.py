@@ -430,6 +430,20 @@ def shot_name_for(project: dict, seq: str, shot_id: str) -> str:
         return validate_component(shot_id, "shot_id")
 
 
+def shot_dir_for(
+    root: Path | str,
+    project: dict,
+    seq: str,
+    shot_id: str,
+    variant: str | None = None,
+    shot_name: str | None = None,
+) -> Path:
+    """Shot folder with an optional explicit name (else read from ``project.json``)."""
+    shot_id = validate_component(shot_id, "shot_id")
+    name = shot_name or shot_name_for(project, seq, shot_id)
+    return seq_path(root, project, seq, variant) / shot_dir_name(shot_id, name)
+
+
 def resolve_shot_dir(
     root: Path | str,
     project: dict,
@@ -438,10 +452,52 @@ def resolve_shot_dir(
     variant: str | None = None,
 ) -> Path:
     """Absolute shot folder: ``.../<seq>[/<variant>]/<id>_<name>``."""
+    return shot_dir_for(root, project, seq, shot_id, variant)
+
+
+def build_shot(
+    root: Path | str,
+    project: dict,
+    seq: str,
+    shot_id: str,
+    variant: str | None = None,
+    shot_name: str | None = None,
+) -> dict:
+    """Assemble the ``COS_SHOT`` object (identity + resolved folder)."""
+    seq = validate_component(seq, "seq")
     shot_id = validate_component(shot_id, "shot_id")
-    return seq_path(root, project, seq, variant) / shot_dir_name(
-        shot_id, shot_name_for(project, seq, shot_id)
+    name = validate_component(shot_name or shot_name_for(project, seq, shot_id), "shot_name")
+    if variant:
+        variant = validate_component(variant, "variant")
+    path = shot_dir_for(root, project, seq, shot_id, variant, name)
+    return {
+        "schema": SCHEMA,
+        "show": project.get("show"),
+        "slug": project.get("slug"),
+        "seq": seq,
+        "variant": variant,
+        "shot_id": shot_id,
+        "shot_name": name,
+        "path": str(path),
+    }
+
+
+def add_shot(project: dict, seq: str, shot_id: str, shot_name: str) -> dict:
+    """Copy of ``project`` with the shot registered (idempotent).
+
+    Creates the sequence entry if it did not exist yet (no variants).
+    """
+    seq = validate_component(seq, "seq")
+    shot_id = validate_component(shot_id, "shot_id")
+    if not shot_name:
+        raise ValueError("Invalid shot_name: empty")
+    shot_name = validate_component(shot_name, "shot_name")
+    out = json.loads(json.dumps(project))
+    sdef = out.setdefault("sequences", {}).setdefault(
+        seq, {"resolution": None, "variants": {}, "shots": {}}
     )
+    sdef.setdefault("shots", {})[shot_id] = shot_name
+    return out
 
 
 def resolve_resolution(
@@ -476,16 +532,20 @@ def build_output(
     version: str,
     variant: str | None = None,
     subdir: str = "02_WORK",
+    shot_name: str | None = None,
 ) -> dict:
     """Resolve the prefix + folder of one task/version of a shot.
 
     Returns ``{base, prefix, out_dir, shot_dir}``. ``prefix`` is the relative,
     forward-slashed string ready to plug into a ComfyUI ``filename_prefix``;
     the save node appends ``_00001_.exr`` / ``.mp4`` / ``.png``.
+
+    ``shot_name`` overrides the name read from ``project.json`` (used when the
+    node is wired from ``COS Shot``).
     """
     validate_component(version, "version")
     root_path = Path(root).resolve()
-    shot_dir = resolve_shot_dir(root_path, project, seq, shot_id, variant)
+    shot_dir = shot_dir_for(root_path, project, seq, shot_id, variant, shot_name)
     base = build_base(project["show"], seq, shot_id, task, version, variant)
     out_dir = shot_dir / subdir / version
     if not is_within(root_path, out_dir):
@@ -565,6 +625,18 @@ def resolve_version(
         history.append({"version": version, "date": date or _today(), "tasks": []})
     save_state(shot_dir, state)
     return version
+
+
+def current_version(shot_dir: Path | str) -> str | None:
+    """Current version **without creating anything** (unlike ``resolve_version``).
+
+    Returns ``None`` when the shot has no version yet.
+    """
+    state = load_state(shot_dir)
+    if state.get("current_version"):
+        return state["current_version"]
+    existing = existing_versions(shot_dir)
+    return format_version(max(existing)) if existing else None
 
 
 def register_task(shot_dir: Path | str, version: str, task: str) -> None:
