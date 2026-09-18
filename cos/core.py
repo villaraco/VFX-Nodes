@@ -403,6 +403,98 @@ def _make_shot(parent: Path, shot_id: str, shot_name: str) -> list[Path]:
 
 
 # ============================================================================
+# Shot + output resolution (COS Path)
+# ============================================================================
+
+def seq_path(
+    root: Path | str,
+    project: dict,
+    seq: str,
+    variant: str | None = None,
+) -> Path:
+    """Directory that holds a sequence (or a variant of it)."""
+    seq = validate_component(seq, "seq")
+    path = project_dir(root, project["slug"]) / seq
+    if variant:
+        path = path / validate_component(variant, "variant")
+    return path
+
+
+def shot_name_for(project: dict, seq: str, shot_id: str) -> str:
+    """Readable shot name from ``project.json``; falls back to the id."""
+    shots = (project.get("sequences", {}).get(seq) or {}).get("shots") or {}
+    name = shots.get(shot_id) or shot_id
+    try:
+        return validate_component(name, "shot_name")
+    except ValueError:
+        return validate_component(shot_id, "shot_id")
+
+
+def resolve_shot_dir(
+    root: Path | str,
+    project: dict,
+    seq: str,
+    shot_id: str,
+    variant: str | None = None,
+) -> Path:
+    """Absolute shot folder: ``.../<seq>[/<variant>]/<id>_<name>``."""
+    shot_id = validate_component(shot_id, "shot_id")
+    return seq_path(root, project, seq, variant) / shot_dir_name(
+        shot_id, shot_name_for(project, seq, shot_id)
+    )
+
+
+def resolve_resolution(
+    project: dict,
+    seq: str,
+    variant: str | None = None,
+) -> list[int] | None:
+    """Resolution for a sequence/variant (variant first, then sequence)."""
+    sdef = project.get("sequences", {}).get(seq) or {}
+    if variant:
+        vdef = (sdef.get("variants") or {}).get(variant) or {}
+        if vdef.get("resolution"):
+            return vdef["resolution"]
+    return sdef.get("resolution")
+
+
+def ensure_shot_dirs(shot_dir: Path | str) -> Path:
+    """Create ``01_INPUT / 02_WORK / 03_PUBLISH`` (+ ``_NOTES.md``) for a shot."""
+    shot_dir = Path(shot_dir)
+    for sub in SHOT_SUBDIRS:
+        (shot_dir / sub).mkdir(parents=True, exist_ok=True)
+    _ensure_notes(shot_dir)
+    return shot_dir
+
+
+def build_output(
+    root: Path | str,
+    project: dict,
+    seq: str,
+    shot_id: str,
+    task: str,
+    version: str,
+    variant: str | None = None,
+    subdir: str = "02_WORK",
+) -> dict:
+    """Resolve the prefix + folder of one task/version of a shot.
+
+    Returns ``{base, prefix, out_dir, shot_dir}``. ``prefix`` is the relative,
+    forward-slashed string ready to plug into a ComfyUI ``filename_prefix``;
+    the save node appends ``_00001_.exr`` / ``.mp4`` / ``.png``.
+    """
+    validate_component(version, "version")
+    root_path = Path(root).resolve()
+    shot_dir = resolve_shot_dir(root_path, project, seq, shot_id, variant)
+    base = build_base(project["show"], seq, shot_id, task, version, variant)
+    out_dir = shot_dir / subdir / version
+    if not is_within(root_path, out_dir):
+        raise ValueError(f"Output escapes the COS root: {out_dir}")
+    prefix = f"{out_dir.relative_to(root_path).as_posix()}/{base}"
+    return {"base": base, "prefix": prefix, "out_dir": out_dir, "shot_dir": shot_dir}
+
+
+# ============================================================================
 # Versioning (02_WORK/_state.json)
 # ============================================================================
 

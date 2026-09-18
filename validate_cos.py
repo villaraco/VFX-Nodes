@@ -354,6 +354,133 @@ def test_build_project_dict(c: Checker) -> None:
         c.ok("| pant | gen | 0010 | boca |" in md.read_text(encoding="utf-8"), "contenido _PROJECT.md")
 
 
+def test_resolve_shot_dir(c: Checker) -> None:
+    print("\n[test_resolve_shot_dir]")
+    project = sample_project()
+    root = Path("E:/COMFY_OUTPUT")
+
+    cine = core.resolve_shot_dir(root, project, "cine", "0010")
+    c.eq(cine.name, "0010_cine", "plano cine sin variante")
+    c.ok(cine.parent.name == "cine", "cine cuelga de la secuencia")
+
+    boca = core.resolve_shot_dir(root, project, "pant", "0010", variant="gen")
+    c.eq(boca.as_posix(), "E:/COMFY_OUTPUT/PROJECTS/TOT_Totie/pant/gen/0010_boca",
+         "plano pant/gen con variante")
+
+    unknown = core.resolve_shot_dir(root, project, "pant", "9999", variant="gen")
+    c.eq(unknown.name, "9999_9999", "shot desconocido usa el id como nombre")
+
+    c.raises(ValueError, lambda: core.resolve_shot_dir(root, project, "../x", "0010"),
+             "seq con traversal")
+
+
+def test_resolve_resolution(c: Checker) -> None:
+    print("\n[test_resolve_resolution]")
+    project = sample_project()
+    c.eq(core.resolve_resolution(project, "cine"), [3840, 2160], "cine -> resolucion de secuencia")
+    c.eq(core.resolve_resolution(project, "pant", "gen"), [1920, 1080], "pant/gen -> de la variante")
+    c.eq(core.resolve_resolution(project, "pant", "callao"), [1080, 1080], "pant/callao -> de la variante")
+    c.eq(core.resolve_resolution(project, "nope"), None, "secuencia inexistente -> None")
+
+
+def test_build_output(c: Checker) -> None:
+    print("\n[test_build_output]")
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        project = sample_project()
+        out = core.build_output(root, project, "pant", "0010", "i2v", "v001", variant="gen")
+
+        c.eq(out["base"], "tot_pant_gen_0010_i2v_v001", "base corta")
+        c.eq(
+            out["prefix"],
+            "PROJECTS/TOT_Totie/pant/gen/0010_boca/02_WORK/v001/tot_pant_gen_0010_i2v_v001",
+            "prefijo relativo con barras normales",
+        )
+        c.ok(out["out_dir"].is_absolute(), "out_dir absoluto")
+        c.ok(core.is_within(root, out["out_dir"]), "out_dir dentro del root")
+        c.ok("\\" not in out["prefix"], "prefijo sin backslashes (ComfyUI)")
+
+        cine = core.build_output(root, project, "cine", "0010", "upscale", "v012")
+        c.eq(
+            cine["prefix"],
+            "PROJECTS/TOT_Totie/cine/0010_cine/02_WORK/v012/tot_cine_0010_upscale_v012",
+            "prefijo sin variante",
+        )
+
+        c.raises(ValueError, lambda: core.build_output(root, project, "cine", "0010", "i2v", "1"),
+                 "version invalida")
+
+
+def test_ensure_shot_dirs(c: Checker) -> None:
+    print("\n[test_ensure_shot_dirs]")
+    with tempfile.TemporaryDirectory() as tmp:
+        shot = Path(tmp) / "0010_boca"
+        core.ensure_shot_dirs(shot)
+        for sub in core.SHOT_SUBDIRS:
+            c.ok((shot / sub).is_dir(), f"ensure_shot_dirs crea {sub}")
+        c.ok((shot / "_NOTES.md").is_file(), "ensure_shot_dirs crea _NOTES.md")
+
+
+def test_cos_path_node(c: Checker) -> None:
+    print("\n[test_cos_path_node]  (smoke, folder_paths simulado)")
+    import importlib
+    import types
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        project = sample_project()
+        core.build_skeleton(root, project)
+        core.write_project(root, project)
+
+        fake = types.ModuleType("folder_paths")
+        fake.get_output_directory = lambda: str(root)
+        previous = sys.modules.get("folder_paths")
+        sys.modules["folder_paths"] = fake
+        try:
+            import cos.nodes_path as nodes_path
+
+            importlib.reload(nodes_path)
+            node = nodes_path.COSPath()
+            out = node.run(
+                project, "pant", "0010", "i2v", "new",
+                variant="gen", model="minimaxh3", seed=1234,
+                prompt={"1": {"class_type": "KSampler"}},
+                extra_pnginfo={"workflow": {"nodes": []}},
+            )
+        finally:
+            if previous is None:
+                sys.modules.pop("folder_paths", None)
+            else:
+                sys.modules["folder_paths"] = previous
+
+        exr, video, png, version, out_dir, info = out
+        c.eq(
+            exr,
+            "PROJECTS/TOT_Totie/pant/gen/0010_boca/02_WORK/v001/tot_pant_gen_0010_i2v_v001",
+            "prefijo EXR",
+        )
+        c.eq(video, exr, "video_prefix = exr_prefix")
+        c.eq(png, exr, "png_prefix = exr_prefix")
+        c.eq(version, "v001", "version nueva")
+        c.ok(Path(out_dir).is_dir(), "carpeta de salida creada")
+
+        meta_file = Path(out_dir) / "tot_pant_gen_0010_i2v_v001_meta.json"
+        c.ok(meta_file.is_file(), "sidecar escrito")
+        meta = json.loads(meta_file.read_text(encoding="utf-8"))
+        c.eq(meta["seed"], 1234, "seed en el sidecar")
+        c.eq(meta["model"], "minimaxh3", "modelo en el sidecar")
+        c.eq(meta["resolution"], [1920, 1080], "resolucion desde project.json")
+        c.eq(meta["variant"], "gen", "variante en el sidecar")
+        c.eq(meta["task"], "i2v", "task en el sidecar")
+        c.eq(meta["workflow"], {"nodes": []}, "workflow embebido")
+        c.eq(meta["prompt"], {"1": {"class_type": "KSampler"}}, "prompt embebido")
+        c.ok("tot_pant_gen_0010_i2v_v001" in info, "info legible")
+
+        state = core.load_state(Path(out_dir).parent.parent)
+        c.eq(state["current_version"], "v001", "_state.json actualizado")
+        c.eq(state["history"][0]["tasks"], ["i2v"], "task registrada en el historial")
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -362,7 +489,7 @@ def main() -> int:
     c = Checker()
 
     print("=" * 70)
-    print("COS — Validator (Fase 0: core)")
+    print("COS — Validator (Fases 0-2: core, COS Project, COS Path)")
     print("=" * 70)
 
     test_slug(c)
@@ -379,6 +506,11 @@ def main() -> int:
     test_render_project_md(c)
     test_parse_inputs(c)
     test_build_project_dict(c)
+    test_resolve_shot_dir(c)
+    test_resolve_resolution(c)
+    test_build_output(c)
+    test_ensure_shot_dirs(c)
+    test_cos_path_node(c)
 
     print("\n" + "=" * 70)
     if c.failures == 0:

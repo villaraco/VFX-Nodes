@@ -23,10 +23,14 @@ except ImportError:
     _IN_COMFYUI = False
 
 if _IN_COMFYUI:
+    from .nodes_path import COSPath
     from .nodes_project import COSProject
 
     NODE_CLASS_MAPPINGS["COSProject"] = COSProject
     NODE_DISPLAY_NAME_MAPPINGS["COSProject"] = "COS Project"
+
+    NODE_CLASS_MAPPINGS["COSPath"] = COSPath
+    NODE_DISPLAY_NAME_MAPPINGS["COSPath"] = "COS Path"
 
 __all__ = [
     "core",
